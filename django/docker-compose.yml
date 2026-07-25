@@ -1,6 +1,7 @@
 services:
   api:
     image: python:3.13-slim
+    container_name: django-api
     ports:
       - "8000:8000"
     volumes:
