@@ -144,3 +144,36 @@ class MeasurementApiTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 404)
+
+    def test_latest_returns_not_found_when_existing_device_has_no_measurements(self):
+        empty_device = Device.objects.create(
+            name="empty", key_ciphertext=b"ciphertext", key_nonce=b"nonce"
+        )
+
+        response = self.client.get(
+            f"/api/devices/{empty_device.id}/measurements/latest/"
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_list_returns_empty_array_when_existing_device_has_no_measurements(self):
+        empty_device = Device.objects.create(
+            name="empty", key_ciphertext=b"ciphertext", key_nonce=b"nonce"
+        )
+
+        response = self.client.get(f"/api/devices/{empty_device.id}/measurements/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [])
+
+    def test_latest_returns_not_found_for_unknown_device(self):
+        unknown_device = Device.objects.create(
+            name="removed", key_ciphertext=b"ciphertext", key_nonce=b"nonce"
+        )
+        unknown_device.delete()
+
+        response = self.client.get(
+            f"/api/devices/{unknown_device.id}/measurements/latest/"
+        )
+
+        self.assertEqual(response.status_code, 404)
