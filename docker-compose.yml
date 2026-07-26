@@ -1,39 +1,80 @@
 services:
   postgres:
     image: postgres:15
-    container_name: postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: django
-      POSTGRES_USER: base_user
-      POSTGRES_PASSWORD: strongpassword  # Replace with a secure password
-    volumes:
-      - ./postgres-data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    networks:
-      - os-msa-poc-network
+    env_file: [.env]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks: [iot-poc]
+
   nats:
     image: nats:2.14-scratch
-    ports:
-      - "4222:4222"
-      - "8080:8080" # Monitoring port
-    env_file:
-      - .env
-    volumes:
-      - ./nats.conf:/etc/nats/nats.conf:ro
-    networks:
-      - os-msa-poc-network
-    command: -config /etc/nats/nats.conf
-  nats-redirect:
-    image: ezenki/nats-auth-redirector:latest
+    command: ["-c", "/etc/nats/nats.conf"]
+    env_file: [.env]
+    volumes: ["./nats.conf:/etc/nats/nats.conf:ro"]
+    healthcheck:
+      test: ["CMD", "/nats-server", "-t", "-c", "/etc/nats/nats.conf"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [iot-poc]
+
+  django:
+    build: ./django
+    env_file: [.env]
+    environment:
+      POSTGRES_HOST: postgres
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,django
+      NATS_PUBLISH_URL: nats://publisher:${NATS_PUBLISH_PASSWORD}@nats:4222
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     depends_on:
-      - nats
-    env_file:
-      - .env
-    networks:
-      - os-msa-poc-network
+      postgres:
+        condition: service_healthy
+    networks: [iot-poc]
+
+  nats-redirect:
+    image: ${NATS_REDIRECT_IMAGE}
+    env_file: [.env]
+    environment:
+      AUTH_SERVER: http://django:8000/api/nats-auth/perms/
+      NATS_URL: nats://auth:${NATS_AUTH_PASSWORD}@nats:4222
+    restart: unless-stopped
+    depends_on:
+      nats:
+        condition: service_healthy
+      django:
+        condition: service_healthy
+    networks: [iot-poc]
+
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    ports: ["80:80"]
+    depends_on:
+      django:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    networks: [iot-poc]
 
 networks:
-  os-msa-poc-network:
-    name: os-msa-poc-network
+  iot-poc: {}
+
+volumes:
+  postgres-data: {}
