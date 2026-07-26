@@ -1,1 +1,0 @@
-docker run --rm -it natsio/nats-box:latest

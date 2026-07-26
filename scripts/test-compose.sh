@@ -18,6 +18,16 @@ test "$(printf '%s\n' "$rendered" | grep -c 'published: "80"')" -eq 1
 ! printf '%s\n' "$rendered" | grep -q 'published: "4222"'
 ! printf '%s\n' "$rendered" | grep -q 'published: "8080"'
 
+grep -Eq 'location[[:space:]]+/admin/[[:space:]]*\{' nginx/default.conf
+grep -A8 -E 'location[[:space:]]+/admin/[[:space:]]*\{' nginx/default.conf |
+  grep -q 'proxy_pass http://django:8000'
+grep -Eq 'location[[:space:]]+/static/[[:space:]]*\{' nginx/default.conf
+grep -A8 -E 'location[[:space:]]+/static/[[:space:]]*\{' nginx/default.conf |
+  grep -q 'proxy_pass http://django:8000'
+grep -Eq 'location[[:space:]]+/[[:space:]]*\{' nginx/default.conf
+grep -A3 -E 'location[[:space:]]+/[[:space:]]*\{' nginx/default.conf |
+  grep -q 'try_files \$uri /index.html'
+
 grep -Eq 'auth_users:[[:space:]]*\[[[:space:]]*"auth",[[:space:]]*"publisher"[[:space:]]*\]' nats.conf
 grep -Eq 'account:[[:space:]]*AUTH' nats.conf
 grep -Eq 'user:[[:space:]]*"publisher"' nats.conf
@@ -26,3 +36,9 @@ grep -Eq 'subscribe:[[:space:]]*\{[[:space:]]*deny:[[:space:]]*\[[[:space:]]*">"
 grep -Eq 'system_account:[[:space:]]*SYS' nats.conf
 grep -Eq 'port:[[:space:]]*8080' nats.conf
 grep -Eq 'no_tls:[[:space:]]*true' nats.conf
+
+grep -q 'natsio/nats-box:0.17.0@sha256:38beb03a5acc875570fa4969bc0353fd9b4a633d33b101309f239a3f22dd2162' ReadMe.md
+grep -q 'nsc generate nkey --account' ReadMe.md
+grep -q 'ACCOUNT_SIGNER_SEED.*first line' ReadMe.md
+grep -q 'ACCOUNT_SIGNER_PUB.*second line' ReadMe.md
+test ! -e setup-nkey.sh

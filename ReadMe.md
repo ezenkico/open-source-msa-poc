@@ -56,10 +56,20 @@ key, for example, with:
 openssl rand -base64 32
 ```
 
-Generate an NATS account signer pair with an NKey-compatible tool. Put its
-private seed in `ACCOUNT_SIGNER_SEED` and matching public key in
-`ACCOUNT_SIGNER_PUB`. Also set independent random values for the PostgreSQL,
-Django, NATS auth-user, and NATS publisher credentials. Set
+Generate an NATS account signer pair with the pinned `nsc 2.10.2` included in
+this immutable `nats-box` image:
+
+```sh
+docker run --rm \
+  natsio/nats-box:0.17.0@sha256:38beb03a5acc875570fa4969bc0353fd9b4a633d33b101309f239a3f22dd2162 \
+  nsc generate nkey --account
+```
+
+The command writes two lines: set `ACCOUNT_SIGNER_SEED` to the first line and
+`ACCOUNT_SIGNER_PUB` to the second line. They are one matching account NKey
+pair. Run this locally, copy the values directly into `.env`, and do not paste
+or commit the output elsewhere. Also set independent random values for the
+PostgreSQL, Django, NATS auth-user, and NATS publisher credentials. Set
 `DJANGO_SUPERUSER_USERNAME`, `DJANGO_SUPERUSER_PASSWORD`, and optionally
 `DJANGO_SUPERUSER_EMAIL` to create a local staff account at container startup.
 
