@@ -52,6 +52,18 @@ class DeviceProvisioningTests(APITestCase):
         self.assertEqual(bytes(device.key_ciphertext), old_ciphertext)
         self.assertEqual(bytes(device.key_nonce), old_nonce)
 
+    def test_non_staff_can_list_devices_without_keys(self):
+        Device.objects.create(
+            name="existing", key_ciphertext=b"ciphertext", key_nonce=b"nonce"
+        )
+        self.client.force_authenticate(self.user)
+
+        listing = self.client.get("/api/devices/")
+
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.data[0]["name"], "existing")
+        self.assertNotIn("key", listing.data[0])
+
     def test_rotation_replaces_key_and_nonce(self):
         self.client.force_authenticate(self.staff)
         created = self.client.post("/api/devices/", {"name": "simulator"})
