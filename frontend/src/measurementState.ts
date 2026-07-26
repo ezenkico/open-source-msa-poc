@@ -23,6 +23,10 @@ export function mergeNotification(
   notification: Measurement,
   capacity: number,
 ): MeasurementState {
+  if (state.latest && notification.entry_index <= state.latest.entry_index) {
+    return state;
+  }
+
   if (state.rows.length >= capacity) {
     return { ...state, latest: notification, missingRange: null };
   }

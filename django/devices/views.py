@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import transaction
 from django.db.models import F
 from django.shortcuts import get_object_or_404
@@ -73,8 +75,18 @@ class MeasurementIngestView(APIView):
     def post(self, request):
         device_id = request.headers.get("X-Device-ID")
         signature = request.headers.get("X-Device-Signature", "")
+        try:
+            parsed_device_id = uuid.UUID(device_id) if device_id else None
+        except (TypeError, ValueError, AttributeError):
+            parsed_device_id = None
+        if parsed_device_id is None:
+            raise AuthenticationFailed("Invalid device credentials.")
+
         with transaction.atomic():
-            device = get_object_or_404(Device.objects.select_for_update(), id=device_id)
+            try:
+                device = Device.objects.select_for_update().get(id=parsed_device_id)
+            except Device.DoesNotExist:
+                raise AuthenticationFailed("Invalid device credentials.") from None
             if not device.enabled:
                 raise PermissionDenied("Device is disabled.")
             key = decrypt_device_key(device.key_ciphertext, device.key_nonce)

@@ -120,6 +120,28 @@ describe("App", () => {
     });
   });
 
+  it("does not miss a notification while the initial authoritative read is pending", async () => {
+    const initialLatest = deferred<Measurement | null>();
+    const initialRows = deferred<Measurement[]>();
+    api.getLatest.mockReturnValue(initialLatest.promise);
+    api.getMeasurements.mockReturnValue(initialRows.promise);
+    render(<App />);
+    await logInAndSelect();
+    await waitFor(() => expect(nats.subscribeToMeasurements).toHaveBeenCalledOnce());
+
+    act(() => notification(measurement(3)));
+    await act(async () => {
+      initialLatest.resolve(measurement(2));
+      initialRows.resolve([measurement(1), measurement(2)]);
+      await Promise.all([initialLatest.promise, initialRows.promise]);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("3");
+    });
+    expect(screen.getAllByRole("row")).toHaveLength(4);
+  });
+
   it("closes the old subscription on device changes and reloads on reconnect", async () => {
     render(<App />);
     await logInAndSelect();

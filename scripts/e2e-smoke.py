@@ -3,13 +3,13 @@
 
 import asyncio
 import base64
-import hashlib
-import hmac
+import importlib.util
 import json
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from pathlib import Path
+from types import ModuleType
 
 import nats
 import requests
@@ -37,37 +37,31 @@ def expect_status(response: requests.Response, expected: int, operation: str) ->
         fail(f"{operation}: expected HTTP {expected}, got {response.status_code}")
 
 
-def encoded_measurement(sequence: int) -> bytes:
-    return json.dumps(
-        {
-            "measurement_name": "temperature",
-            "value": 20.0 + sequence,
-            "measured_at": datetime.now(timezone.utc)
-            .isoformat()
-            .replace("+00:00", "Z"),
-        },
-        separators=(",", ":"),
-    ).encode()
+def load_device_simulator() -> ModuleType:
+    path = Path(__file__).resolve().parents[1] / "iot-device-sim.py"
+    spec = importlib.util.spec_from_file_location("iot_device_sim", path)
+    if spec is None or spec.loader is None:
+        fail("Could not load the repository device simulator")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def ingest(base_url: str, device_id: str, key: bytes, sequence: int):
-    body = encoded_measurement(sequence)
-    signature = hmac.new(key, body, hashlib.sha256).hexdigest()
-    return request_json(
-        "POST",
+def ingest(simulator, base_url: str, device_id: str, key: bytes, sequence: int):
+    return simulator.send_measurement(
         f"{base_url}/api/device-measurements/",
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-Device-ID": device_id,
-            "X-Device-Signature": f"sha256={signature}",
-        },
+        device_id,
+        key,
+        "temperature",
+        20.0 + sequence,
+        simulator._current_utc_timestamp(),
     )
 
 
 async def run() -> None:
     base_url = os.environ.get("IOT_BASE_URL", "http://localhost").rstrip("/")
     websocket_url = os.environ.get("IOT_NATS_WS_URL", "ws://localhost/nats")
+    simulator = load_device_simulator()
     username = os.environ.get("E2E_STAFF_USERNAME") or os.environ.get(
         "DJANGO_SUPERUSER_USERNAME"
     )
@@ -126,10 +120,9 @@ async def run() -> None:
     subscription = await client.subscribe(f"devices.{device_id}.measurements")
     await client.flush(timeout=NATS_TIMEOUT)
     try:
-        first_response, first = await asyncio.to_thread(
-            ingest, base_url, device_id, device_key, 1
+        first = await asyncio.to_thread(
+            ingest, simulator, base_url, device_id, device_key, 1
         )
-        expect_status(first_response, 201, "first ingestion")
         if not isinstance(first, dict) or first.get("entry_index") != 1:
             fail("first ingestion: expected entry index 1")
 
@@ -149,10 +142,9 @@ async def run() -> None:
             fail("latest measurement: expected entry index 1")
 
         for sequence in (2, 3):
-            response, payload = await asyncio.to_thread(
-                ingest, base_url, device_id, device_key, sequence
+            payload = await asyncio.to_thread(
+                ingest, simulator, base_url, device_id, device_key, sequence
             )
-            expect_status(response, 201, f"ingestion {sequence}")
             if not isinstance(payload, dict) or payload.get("entry_index") != sequence:
                 fail(f"ingestion {sequence}: expected entry index {sequence}")
 
@@ -179,14 +171,18 @@ async def run() -> None:
             fail("device-key rotation: response has no one-time key")
         new_key = base64.b64decode(rotated["key"], validate=True)
 
-        old_response, _ = await asyncio.to_thread(
-            ingest, base_url, device_id, device_key, 4
+        try:
+            await asyncio.to_thread(
+                ingest, simulator, base_url, device_id, device_key, 4
+            )
+        except requests.HTTPError as error:
+            if error.response is None or error.response.status_code != 401:
+                raise
+        else:
+            fail("old device key: expected HTTP 401")
+        new_measurement = await asyncio.to_thread(
+            ingest, simulator, base_url, device_id, new_key, 4
         )
-        expect_status(old_response, 401, "old device key")
-        new_response, new_measurement = await asyncio.to_thread(
-            ingest, base_url, device_id, new_key, 4
-        )
-        expect_status(new_response, 201, "rotated device key")
         if (
             not isinstance(new_measurement, dict)
             or new_measurement.get("entry_index") != 4

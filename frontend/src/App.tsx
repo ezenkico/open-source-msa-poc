@@ -79,15 +79,12 @@ export default function App() {
     const generation = selectionGeneration.current;
     let disposed = false;
     let closeSubscription: () => void = () => {};
+    let initialStateLoaded = false;
+    const pendingNotifications: Measurement[] = [];
     const isCurrent = () => !disposed && selectionGeneration.current === generation;
 
     async function start() {
       try {
-        const state = await loadAuthoritativeState(deviceId, token);
-        if (!isCurrent()) {
-          return;
-        }
-        setMeasurementState(state);
         const natsToken = await getNatsToken(token);
         if (!isCurrent()) {
           return;
@@ -97,7 +94,11 @@ export default function App() {
           natsToken,
           (notification) => {
             if (isCurrent()) {
-              setMeasurementState((current) => mergeNotification(current, notification, PAGE_SIZE));
+              if (!initialStateLoaded) {
+                pendingNotifications.push(notification);
+              } else {
+                setMeasurementState((current) => mergeNotification(current, notification, PAGE_SIZE));
+              }
             }
           },
           () => {
@@ -122,6 +123,17 @@ export default function App() {
           return;
         }
         closeSubscription = close;
+        const state = await loadAuthoritativeState(deviceId, token);
+        if (!isCurrent()) {
+          return;
+        }
+        const mergedState = pendingNotifications.reduce<MeasurementState>(
+          (current, notification) => mergeNotification(current, notification, PAGE_SIZE),
+          state,
+        );
+        pendingNotifications.length = 0;
+        initialStateLoaded = true;
+        setMeasurementState(mergedState);
       } catch (error) {
         if (isCurrent()) {
           setConnectionError(error instanceof Error ? error.message : "Could not connect to notifications");

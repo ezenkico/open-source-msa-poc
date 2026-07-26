@@ -90,6 +90,47 @@ class MeasurementIngestionTests(TransactionTestCase):
         self.assertEqual(response.status_code, 401)
         self.assertFalse(Measurement.objects.exists())
 
+    def test_missing_device_id_is_rejected_without_server_error(self):
+        body = self.body()
+        response = self.client.generic(
+            "POST",
+            "/api/device-measurements/",
+            body,
+            content_type="application/json",
+            HTTP_X_DEVICE_SIGNATURE="sha256=" + ("0" * 64),
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(Measurement.objects.exists())
+
+    def test_malformed_device_id_is_rejected_without_server_error(self):
+        body = self.body()
+        response = self.client.generic(
+            "POST",
+            "/api/device-measurements/",
+            body,
+            content_type="application/json",
+            HTTP_X_DEVICE_ID="not-a-uuid",
+            HTTP_X_DEVICE_SIGNATURE="sha256=" + ("0" * 64),
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(Measurement.objects.exists())
+
+    def test_unknown_device_id_is_rejected_without_server_error(self):
+        body = self.body()
+        response = self.client.generic(
+            "POST",
+            "/api/device-measurements/",
+            body,
+            content_type="application/json",
+            HTTP_X_DEVICE_ID="11111111-1111-4111-8111-111111111111",
+            HTTP_X_DEVICE_SIGNATURE="sha256=" + ("0" * 64),
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(Measurement.objects.exists())
+
     def test_equivalent_json_encoding_invalidates_signature(self):
         signed_body = self.body()
         equivalent_body = (

@@ -44,4 +44,15 @@ describe("mergeNotification", () => {
 
     expect(result.missingRange).toEqual({ afterIndex: 2, throughIndex: 5 });
   });
+
+  it("ignores duplicate and older notifications so latest never regresses", () => {
+    const state = {
+      latest: measurement(5),
+      rows: [measurement(3), measurement(4), measurement(5)],
+      missingRange: null,
+    };
+
+    expect(mergeNotification(state, measurement(5), 10)).toEqual(state);
+    expect(mergeNotification(state, measurement(4), 10)).toEqual(state);
+  });
 });
