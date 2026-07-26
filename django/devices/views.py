@@ -18,6 +18,7 @@ from .nats import publish_measurement_best_effort
 from .serializers import (
     DeviceCreateSerializer,
     DeviceSerializer,
+    MeasurementListQuerySerializer,
     MeasurementInputSerializer,
     MeasurementSerializer,
 )
@@ -96,3 +97,53 @@ class MeasurementIngestView(APIView):
                 )
             )
         return Response(MeasurementSerializer(measurement).data, status=status.HTTP_201_CREATED)
+
+
+class AuthenticatedMeasurementView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get_authenticate_header(self, request):
+        return "Bearer"
+
+
+class LatestMeasurementView(AuthenticatedMeasurementView):
+    def get(self, request, device_id):
+        get_object_or_404(Device, id=device_id)
+        measurement = (
+            Measurement.objects.filter(device_id=device_id)
+            .order_by("-entry_index")
+            .first()
+        )
+        if measurement is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        return Response(MeasurementSerializer(measurement).data)
+
+
+class MeasurementListView(AuthenticatedMeasurementView):
+    def get(self, request, device_id):
+        query = MeasurementListQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        get_object_or_404(Device, id=device_id)
+
+        limit = query.validated_data["limit"]
+        before_index = query.validated_data.get("before_index")
+        after_index = query.validated_data.get("after_index")
+        through_index = query.validated_data.get("through_index")
+        queryset = Measurement.objects.filter(device_id=device_id)
+
+        if before_index is not None:
+            rows = list(
+                queryset.filter(entry_index__lt=before_index)
+                .order_by("-entry_index")[:limit]
+            )
+            rows.reverse()
+        elif after_index is not None:
+            queryset = queryset.filter(entry_index__gt=after_index)
+            if through_index is not None:
+                queryset = queryset.filter(entry_index__lte=through_index)
+            rows = list(queryset.order_by("entry_index")[:limit])
+        else:
+            rows = list(queryset.order_by("-entry_index")[:limit])
+            rows.reverse()
+
+        return Response(MeasurementSerializer(rows, many=True).data)
