@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   getLatest,
   getMeasurements,
@@ -38,13 +38,14 @@ export default function App() {
   const [measurementState, setMeasurementState] = useState<MeasurementState>(EMPTY_STATE);
   const [apiError, setApiError] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const selectionGeneration = useRef(0);
 
   const loadAuthoritativeState = useCallback(async (selectedDeviceId: string, token: string) => {
     const [latest, rows] = await Promise.all([
       getLatest(selectedDeviceId, token),
       getMeasurements(selectedDeviceId, token, `limit=${PAGE_SIZE}`),
     ]);
-    setMeasurementState({ latest, rows, missingRange: null });
+    return { latest, rows, missingRange: null };
   }, []);
 
   async function submitLogin(event: FormEvent<HTMLFormElement>) {
@@ -62,6 +63,7 @@ export default function App() {
   }
 
   function selectDevice(selectedDeviceId: string) {
+    selectionGeneration.current += 1;
     setDeviceId(selectedDeviceId);
     setConnectionError(null);
     setApiError(null);
@@ -74,35 +76,54 @@ export default function App() {
     }
 
     const token = accessToken;
+    const generation = selectionGeneration.current;
     let disposed = false;
     let closeSubscription: () => void = () => {};
+    const isCurrent = () => !disposed && selectionGeneration.current === generation;
 
     async function start() {
       try {
-        await loadAuthoritativeState(deviceId, token);
-        const natsToken = await getNatsToken(token);
-        if (disposed) {
+        const state = await loadAuthoritativeState(deviceId, token);
+        if (!isCurrent()) {
           return;
         }
-        closeSubscription = await subscribeToMeasurements(
+        setMeasurementState(state);
+        const natsToken = await getNatsToken(token);
+        if (!isCurrent()) {
+          return;
+        }
+        const close = await subscribeToMeasurements(
           deviceId,
           natsToken,
-          (notification) => setMeasurementState((current) => mergeNotification(current, notification, PAGE_SIZE)),
+          (notification) => {
+            if (isCurrent()) {
+              setMeasurementState((current) => mergeNotification(current, notification, PAGE_SIZE));
+            }
+          },
           () => {
-            void loadAuthoritativeState(deviceId, token).catch((error: unknown) => {
-              if (!disposed) {
+            void loadAuthoritativeState(deviceId, token).then((reloadedState) => {
+              if (isCurrent()) {
+                setMeasurementState(reloadedState);
+              }
+            }).catch((error: unknown) => {
+              if (isCurrent()) {
                 setApiError(error instanceof Error ? error.message : "Could not reload measurements");
               }
             });
           },
           (error) => {
-            if (!disposed) {
+            if (isCurrent()) {
               setConnectionError(error.message);
             }
           },
         );
+        if (!isCurrent()) {
+          close();
+          return;
+        }
+        closeSubscription = close;
       } catch (error) {
-        if (!disposed) {
+        if (isCurrent()) {
           setConnectionError(error instanceof Error ? error.message : "Could not connect to notifications");
         }
       }
@@ -121,19 +142,29 @@ export default function App() {
       return;
     }
 
+    const generation = selectionGeneration.current;
+    let disposed = false;
+    const isCurrent = () => !disposed && selectionGeneration.current === generation;
     void getMeasurements(
       deviceId,
       accessToken,
       `after_index=${range.afterIndex}&through_index=${range.throughIndex}&limit=${PAGE_SIZE}`,
     ).then((rows) => {
-      setMeasurementState((current) => ({
-        ...current,
-        rows: appendUniqueRows(current.rows, rows),
-        missingRange: null,
-      }));
+      if (isCurrent()) {
+        setMeasurementState((current) => ({
+          ...current,
+          rows: appendUniqueRows(current.rows, rows),
+          missingRange: null,
+        }));
+      }
     }).catch((error: unknown) => {
-      setApiError(error instanceof Error ? error.message : "Could not load missing measurements");
+      if (isCurrent()) {
+        setApiError(error instanceof Error ? error.message : "Could not load missing measurements");
+      }
     });
+    return () => {
+      disposed = true;
+    };
   }, [accessToken, deviceId, measurementState.missingRange]);
 
   async function loadPreviousPage() {
@@ -141,12 +172,18 @@ export default function App() {
     if (!accessToken || !deviceId || firstIndex === undefined) {
       return;
     }
+    const generation = selectionGeneration.current;
     setApiError(null);
     try {
       const rows = await getMeasurements(deviceId, accessToken, `before_index=${firstIndex}&limit=${PAGE_SIZE}`);
+      if (selectionGeneration.current !== generation) {
+        return;
+      }
       setMeasurementState((current) => ({ ...current, rows, missingRange: null }));
     } catch (error) {
-      setApiError(error instanceof Error ? error.message : "Could not load the previous page");
+      if (selectionGeneration.current === generation) {
+        setApiError(error instanceof Error ? error.message : "Could not load the previous page");
+      }
     }
   }
 

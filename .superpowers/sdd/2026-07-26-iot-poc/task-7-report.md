@@ -32,3 +32,20 @@ Implemented and verified; committed with the Task 7 commit below.
 - The plan's dependency list omitted `@types/node`, required by Vite 7's TypeScript configuration; the smallest compatible addition (`^24.0.0`) was made and locked. `vite.config.ts` uses `vitest/config` so the Vitest `test` property is typed.
 - `nats.ws@1.30.3` emits npm's upstream deprecation warning, but it is the exact required dependency from the task brief.
 - `getLatest` maps the documented empty-device 404 to `null`, matching its required return type; other non-2xx responses become errors containing the HTTP status.
+
+## Fix Round 1: Device-Switch Lifecycle Safety
+
+- Added a monotonically increasing selection generation to `App`. Initial
+  loads, gap fetches, previous-page fetches, NATS notifications, reconnects,
+  and connection errors now verify that their captured generation is current
+  before committing UI state.
+- A subscription whose promise resolves after its device is disposed is closed
+  immediately; all notification callbacks are generation-gated.
+- Added deferred-promise A-to-B regression coverage for stale initial, gap,
+  and previous-page responses, plus a late subscription close/ignored-callback
+  case. Added a direct previous-page behavior assertion.
+- Red: `npm test -- src/App.test.tsx` failed 4 tests against the original
+  implementation: stale initial/gap/previous results committed and the late
+  subscription was not closed.
+- Green: the focused App suite passed 9 tests after the lifecycle guard.
+- Final: `npm test` passed 12 tests and `npm run build` completed.
