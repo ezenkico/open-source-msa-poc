@@ -1,8 +1,12 @@
 from datetime import timedelta
 
 from django.utils import timezone
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.decorators import (
+    api_view,
+    authentication_classes,
+    permission_classes,
+)
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework_simplejwt.tokens import AccessToken
@@ -34,6 +38,7 @@ def get_nats_token(request):
     return Response({"token": str(token)})
 
 @api_view(["GET"])
+@authentication_classes([])
 @permission_classes([AllowAny])  # we do our own JWT check here
 def get_nats_permissions(request):
     """
@@ -62,18 +67,15 @@ def get_nats_permissions(request):
     except jwt.InvalidTokenError:
         return Response({"detail": "Invalid token"}, status=status.HTTP_401_UNAUTHORIZED)
 
-    # You can inspect payload["username"], roles, etc. here
-    username = payload.get("username")
     token_type = payload.get("token_type")
 
     if token_type != "nats":
         return Response({"detail": "Wrong token type"}, status=status.HTTP_401_UNAUTHORIZED)
 
-    perms = {
-        "sub": [
-            {"allow": "devices.>"},
-        ],
-    }
-
-    return Response(perms)
-
+    return Response(
+        {
+            "account": "APP",
+            "pub": {"allow": [], "deny": ["devices.>"]},
+            "sub": {"allow": ["devices.*.measurements"], "deny": []},
+        }
+    )
