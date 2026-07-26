@@ -181,3 +181,5 @@ STATIC_ROOT = BASE_DIR / "staticfiles"  # where collectstatic will put files
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+DEVICE_KEY_ENCRYPTION_KEY = os.environ.get("DEVICE_KEY_ENCRYPTION_KEY", "")

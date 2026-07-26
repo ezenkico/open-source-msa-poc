@@ -1,6 +1,17 @@
 from rest_framework import serializers
 
-from .models import Measurement
+from .models import Device, Measurement
+
+
+class DeviceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Device
+        fields = ["id", "name", "enabled", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class DeviceCreateSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=120)
 
 
 class MeasurementSerializer(serializers.ModelSerializer):
