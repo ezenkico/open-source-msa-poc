@@ -3,9 +3,10 @@ import hashlib
 import hmac
 import json
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import AsyncMock, patch
 
 from django.db import close_old_connections
-from django.test import TransactionTestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from rest_framework.test import APIClient
 
 from devices.crypto import encrypt_device_key
@@ -36,6 +37,11 @@ class MeasurementIngestionTests(TransactionTestCase):
             name="simulator", key_ciphertext=ciphertext, key_nonce=nonce
         )
         self.client = APIClient()
+        publisher_patcher = patch(
+            "devices.views.publish_measurement_best_effort"
+        )
+        self.publish_measurement = publisher_patcher.start()
+        self.addCleanup(publisher_patcher.stop)
 
     def body(self, value=21.5):
         return json.dumps(
@@ -174,3 +180,55 @@ class MeasurementIngestionTests(TransactionTestCase):
 
         self.assertEqual(sorted(status for status, _ in results), [201, 201])
         self.assertEqual(sorted(index for _, index in results), [1, 2])
+
+
+@override_settings(DEVICE_KEY_ENCRYPTION_KEY=MASTER_KEY)
+class MeasurementNotificationCallbackTests(TestCase):
+    def setUp(self):
+        ciphertext, nonce = encrypt_device_key(DEVICE_KEY)
+        self.device = Device.objects.create(
+            name="simulator", key_ciphertext=ciphertext, key_nonce=nonce
+        )
+        self.client = APIClient()
+
+    def body(self):
+        return json.dumps(
+            {
+                "measurement_name": "temperature",
+                "value": 21.5,
+                "measured_at": "2026-07-25T18:30:00Z",
+            },
+            separators=(",", ":"),
+        ).encode()
+
+    def post_measurement(self):
+        body = self.body()
+        return self.client.generic(
+            "POST",
+            "/api/device-measurements/",
+            body,
+            content_type="application/json",
+            **signed_headers(self.device, body),
+        )
+
+    @patch("devices.views.publish_measurement_best_effort")
+    def test_publish_is_deferred_until_after_commit(self, publish_measurement):
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            response = self.post_measurement()
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(callbacks), 1)
+        publish_measurement.assert_not_called()
+
+        callbacks[0]()
+
+        publish_measurement.assert_called_once_with(Measurement.objects.get().id)
+
+    @patch("devices.nats._publish", new_callable=AsyncMock)
+    def test_publish_failure_keeps_ingestion_successful(self, publish):
+        publish.side_effect = RuntimeError("unavailable")
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            response = self.post_measurement()
+
+        self.assertEqual(response.status_code, 201)
+        callbacks[0]()

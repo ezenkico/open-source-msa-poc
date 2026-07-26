@@ -183,3 +183,7 @@ STATIC_ROOT = BASE_DIR / "staticfiles"  # where collectstatic will put files
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 DEVICE_KEY_ENCRYPTION_KEY = os.environ.get("DEVICE_KEY_ENCRYPTION_KEY", "")
+
+NATS_PUBLISH_URL = os.environ.get(
+    "NATS_PUBLISH_URL", "nats://publisher:publisher@nats:4222"
+)

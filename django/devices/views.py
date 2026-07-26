@@ -14,6 +14,7 @@ from .crypto import (
     generate_device_key,
 )
 from .models import Device, Measurement
+from .nats import publish_measurement_best_effort
 from .serializers import (
     DeviceCreateSerializer,
     DeviceSerializer,
@@ -88,5 +89,10 @@ class MeasurementIngestView(APIView):
                 device=device,
                 entry_index=entry_index,
                 **serializer.validated_data,
+            )
+            transaction.on_commit(
+                lambda measurement_id=measurement.id: publish_measurement_best_effort(
+                    measurement_id
+                )
             )
         return Response(MeasurementSerializer(measurement).data, status=status.HTTP_201_CREATED)
