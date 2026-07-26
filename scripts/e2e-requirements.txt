@@ -1,0 +1,2 @@
+nats-py[aiohttp]>=2.11,<3
+requests>=2.32,<3
