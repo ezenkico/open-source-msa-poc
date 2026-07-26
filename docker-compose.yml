@@ -12,12 +12,12 @@ services:
     networks: [iot-poc]
 
   nats:
-    image: nats:2.14-scratch
+    image: nats:2.14-alpine
     command: ["-c", "/etc/nats/nats.conf"]
     env_file: [.env]
     volumes: ["./nats.conf:/etc/nats/nats.conf:ro"]
     healthcheck:
-      test: ["CMD", "/nats-server", "-t", "-c", "/etc/nats/nats.conf"]
+      test: ["CMD", "nc", "-z", "127.0.0.1", "4222"]
       interval: 5s
       timeout: 5s
       retries: 12
