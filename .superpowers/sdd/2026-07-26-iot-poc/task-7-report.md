@@ -49,3 +49,17 @@ Implemented and verified; committed with the Task 7 commit below.
   subscription was not closed.
 - Green: the focused App suite passed 9 tests after the lifecycle guard.
 - Final: `npm test` passed 12 tests and `npm run build` completed.
+
+## Fix Round 2: Adapter and Deterministic Race Coverage
+
+- Added `api.test.ts` coverage for relative API paths, Bearer authorization,
+  login payloads, and non-2xx errors that include the response status.
+- Added `nats.test.ts` coverage with a mocked `nats.ws` adapter for `/nats`
+  URL construction, selected-device subjects, payload validation, and
+  unsubscribe/connection-close cleanup.
+- Updated the stale-initial and stale-notification regression tests to resolve
+  promises and invoke callbacks inside awaited `act` blocks before asserting
+  the preserved B-device state.
+- Focused verification: `npm test -- src/api.test.ts src/nats.test.ts src/App.test.tsx`
+  passed 14 tests (3 API, 2 NATS, 9 App).
+- Final: `npm test` passed 17 tests and `npm run build` completed.

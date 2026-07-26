@@ -177,10 +177,13 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText(/selected device/i), { target: { value: DEVICE_TWO.id } });
     await waitFor(() => expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("20"));
 
-    staleLatest.resolve(measurement(2));
-    staleRows.resolve([measurement(1), measurement(2)]);
+    await act(async () => {
+      staleLatest.resolve(measurement(2));
+      staleRows.resolve([measurement(1), measurement(2)]);
+      await Promise.all([staleLatest.promise, staleRows.promise]);
+    });
 
-    await waitFor(() => expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("20"));
+    expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("20");
     expect(screen.getAllByRole("row")).toHaveLength(2);
   });
 
@@ -275,10 +278,17 @@ describe("App", () => {
 
     fireEvent.change(screen.getByLabelText(/selected device/i), { target: { value: DEVICE_TWO.id } });
     await waitFor(() => expect(nats.subscribeToMeasurements).toHaveBeenCalledTimes(2));
-    lateSubscription.resolve(lateClose);
+    await act(async () => {
+      lateSubscription.resolve(lateClose);
+      await lateSubscription.promise;
+    });
 
     await waitFor(() => expect(lateClose).toHaveBeenCalledOnce());
-    staleNotification?.(measurement(99));
-    await waitFor(() => expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("20"));
+    expect(staleNotification).toEqual(expect.any(Function));
+    await act(async () => {
+      staleNotification!(measurement(99));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("20");
   });
 });
