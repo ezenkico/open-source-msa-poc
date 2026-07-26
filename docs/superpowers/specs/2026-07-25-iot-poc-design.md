@@ -40,6 +40,15 @@ The README and relevant integration documentation must state that MQTT and
 JetStream are omitted because this project demonstrates frameworks integrating
 with open-source services rather than a complete production application.
 
+The README must also present the architecture as a rapid-development pattern,
+not only as a component reference. It should explain how established
+frameworks and AI-assisted development reduce the time needed to assemble a
+credible system, particularly by reusing framework-provided authentication,
+ORM, migrations, validation, and administrative interfaces. Django is the
+reference implementation rather than a mandatory architectural dependency:
+another backend framework may replace it if it preserves the documented HTTP,
+authorization, persistence, and NATS publishing contracts.
+
 ## System Architecture
 
 The device-data flow is:
