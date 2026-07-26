@@ -26,7 +26,7 @@ def sign_body(key: bytes, body: bytes) -> str:
     return f"sha256={digest}"
 
 
-def send_measurement(
+def send_measurement_response(
     url: str,
     device_id: str,
     key: bytes,
@@ -35,7 +35,7 @@ def send_measurement(
     measured_at: str,
 ) -> dict:
     body = encode_measurement(name, value, measured_at)
-    response = requests.post(
+    return requests.post(
         url,
         data=body,
         headers={
@@ -44,6 +44,19 @@ def send_measurement(
             "X-Device-Signature": sign_body(key, body),
         },
         timeout=10,
+    )
+
+
+def send_measurement(
+    url: str,
+    device_id: str,
+    key: bytes,
+    name: str,
+    value: float,
+    measured_at: str,
+) -> dict:
+    response = send_measurement_response(
+        url, device_id, key, name, value, measured_at
     )
     response.raise_for_status()
     return response.json()

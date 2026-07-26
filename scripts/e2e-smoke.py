@@ -48,7 +48,7 @@ def load_device_simulator() -> ModuleType:
 
 
 def ingest(simulator, base_url: str, device_id: str, key: bytes, sequence: int):
-    return simulator.send_measurement(
+    response = simulator.send_measurement_response(
         f"{base_url}/api/device-measurements/",
         device_id,
         key,
@@ -56,6 +56,7 @@ def ingest(simulator, base_url: str, device_id: str, key: bytes, sequence: int):
         20.0 + sequence,
         simulator._current_utc_timestamp(),
     )
+    return response, response.json()
 
 
 async def run() -> None:
@@ -120,9 +121,10 @@ async def run() -> None:
     subscription = await client.subscribe(f"devices.{device_id}.measurements")
     await client.flush(timeout=NATS_TIMEOUT)
     try:
-        first = await asyncio.to_thread(
+        first_response, first = await asyncio.to_thread(
             ingest, simulator, base_url, device_id, device_key, 1
         )
+        expect_status(first_response, 201, "first ingestion")
         if not isinstance(first, dict) or first.get("entry_index") != 1:
             fail("first ingestion: expected entry index 1")
 
@@ -142,9 +144,10 @@ async def run() -> None:
             fail("latest measurement: expected entry index 1")
 
         for sequence in (2, 3):
-            payload = await asyncio.to_thread(
+            response, payload = await asyncio.to_thread(
                 ingest, simulator, base_url, device_id, device_key, sequence
             )
+            expect_status(response, 201, f"ingestion {sequence}")
             if not isinstance(payload, dict) or payload.get("entry_index") != sequence:
                 fail(f"ingestion {sequence}: expected entry index {sequence}")
 
@@ -171,18 +174,14 @@ async def run() -> None:
             fail("device-key rotation: response has no one-time key")
         new_key = base64.b64decode(rotated["key"], validate=True)
 
-        try:
-            await asyncio.to_thread(
-                ingest, simulator, base_url, device_id, device_key, 4
-            )
-        except requests.HTTPError as error:
-            if error.response is None or error.response.status_code != 401:
-                raise
-        else:
-            fail("old device key: expected HTTP 401")
-        new_measurement = await asyncio.to_thread(
+        old_response, _ = await asyncio.to_thread(
+            ingest, simulator, base_url, device_id, device_key, 4
+        )
+        expect_status(old_response, 401, "old device key")
+        new_response, new_measurement = await asyncio.to_thread(
             ingest, simulator, base_url, device_id, new_key, 4
         )
+        expect_status(new_response, 201, "rotated device key")
         if (
             not isinstance(new_measurement, dict)
             or new_measurement.get("entry_index") != 4

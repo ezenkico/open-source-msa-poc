@@ -31,6 +31,22 @@ class DeviceSimulatorTests(unittest.TestCase):
         )
 
     @patch("iot_device_sim.requests.post")
+    def test_send_response_exposes_the_real_http_status(self, post):
+        response = Mock(status_code=201)
+        post.return_value = response
+
+        result = iot_device_sim.send_measurement_response(
+            "http://localhost/api/device-measurements/",
+            "device-id",
+            b"d" * 32,
+            "temperature",
+            21.5,
+            "2026-07-25T18:30:00Z",
+        )
+
+        self.assertIs(result, response)
+
+    @patch("iot_device_sim.requests.post")
     def test_post_sends_exact_body_and_device_headers(self, post):
         post.return_value = Mock(
             status_code=201,
