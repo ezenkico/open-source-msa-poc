@@ -70,7 +70,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Send one signed measurement to the IoT proof of concept."
     )
-    parser.add_argument("--url", required=True)
+    parser.add_argument("--url", default="http://localhost")
     parser.add_argument("--device-id", required=True)
     parser.add_argument("--key", required=True, help="Base64 provisioning key")
     parser.add_argument("--name", required=True)

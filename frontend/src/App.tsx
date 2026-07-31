@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getLatest,
   getMeasurements,
@@ -48,7 +48,7 @@ export default function App() {
     return { latest, rows, missingRange: null };
   }, []);
 
-  async function submitLogin(event: FormEvent<HTMLFormElement>) {
+  async function submitLogin(event: any) {
     event.preventDefault();
     setApiError(null);
     try {

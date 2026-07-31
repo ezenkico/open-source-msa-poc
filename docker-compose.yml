@@ -48,7 +48,7 @@ services:
     networks: [iot-poc]
 
   nats-redirect:
-    image: ${NATS_REDIRECT_IMAGE}
+    image: ezenki/nats-auth-redirector:latest
     env_file: [.env]
     environment:
       AUTH_SERVER: http://django:8000/api/nats-auth/perms/
