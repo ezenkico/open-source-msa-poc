@@ -1,3 +1,6 @@
+#!/bin/sh
+set -eu
+
 mkdir -p ./nats-keys
 
 docker run --rm -it \
