@@ -57,10 +57,12 @@ function measurement(entry_index: number, device_id = DEVICE_ONE.id): Measuremen
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 async function logIn() {
@@ -227,6 +229,63 @@ describe("App", () => {
     });
     expect(screen.getByRole("option", { name: DEVICE_THREE.name })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: DEVICE_TWO.name })).not.toBeInTheDocument();
+  });
+
+  it.each([401, 403])("logs out when an older overlapping refresh returns %i", async (status) => {
+    const older = deferred<typeof DEVICE_ONE[]>();
+    const newer = deferred<typeof DEVICE_ONE[]>();
+    render(<App />);
+    await logIn();
+    await waitFor(() => expect(nats.subscribeToDeviceCreations).toHaveBeenCalledOnce());
+    api.listDevices.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+
+    act(() => {
+      deviceCreated();
+      deviceCreated();
+    });
+    await act(async () => {
+      newer.resolve([DEVICE_ONE, DEVICE_THREE]);
+      await newer.promise;
+    });
+    expect(await screen.findByRole("option", { name: DEVICE_THREE.name })).toBeInTheDocument();
+
+    await act(async () => {
+      older.reject(new api.ApiError(status));
+      await older.promise.catch(() => undefined);
+    });
+    expect(await screen.findByRole("button", { name: /sign in/i })).toBeInTheDocument();
+    expect(session.clearAccessToken).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText(/selected device/i)).not.toBeInTheDocument();
+  });
+
+  it.each([401, 403])("ignores a stale %i response from an earlier authentication session", async (status) => {
+    const staleUnauthorized = deferred<typeof DEVICE_ONE[]>();
+    api.login.mockResolvedValueOnce("first-token").mockResolvedValueOnce("second-token");
+    render(<App />);
+    await logIn();
+    await waitFor(() => expect(nats.subscribeToDeviceCreations).toHaveBeenCalledOnce());
+    const firstSessionDeviceCreated = deviceCreated;
+    api.listDevices
+      .mockReturnValueOnce(staleUnauthorized.promise)
+      .mockRejectedValueOnce(new api.ApiError(401));
+
+    act(() => {
+      firstSessionDeviceCreated();
+      firstSessionDeviceCreated();
+    });
+    expect(await screen.findByRole("button", { name: /sign in/i })).toBeInTheDocument();
+    await logIn();
+    await waitFor(() => expect(nats.subscribeToDeviceCreations).toHaveBeenCalledTimes(2));
+    session.clearAccessToken.mockClear();
+
+    await act(async () => {
+      staleUnauthorized.reject(new api.ApiError(status));
+      await staleUnauthorized.promise.catch(() => undefined);
+    });
+    expect(screen.getByLabelText(/selected device/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /sign in/i })).not.toBeInTheDocument();
+    expect(session.storeAccessToken).toHaveBeenLastCalledWith("second-token");
+    expect(session.clearAccessToken).not.toHaveBeenCalled();
   });
 
   it("closes the global device subscription when the component unmounts", async () => {

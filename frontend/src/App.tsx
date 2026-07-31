@@ -43,12 +43,14 @@ export default function App() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const selectionGeneration = useRef(0);
   const deviceListRequestGeneration = useRef(0);
+  const authenticationGeneration = useRef(0);
   const selectedDeviceIdRef = useRef("");
 
   const logout = useCallback(() => {
     clearAccessToken();
     selectionGeneration.current += 1;
     deviceListRequestGeneration.current += 1;
+    authenticationGeneration.current += 1;
     selectedDeviceIdRef.current = "";
     setAccessToken(null);
     setDevices([]);
@@ -57,11 +59,14 @@ export default function App() {
     setConnectionError(null);
   }, []);
 
-  const refreshDevices = useCallback(async (token: string) => {
+  const refreshDevices = useCallback(async (token: string, authGeneration: number) => {
     const generation = ++deviceListRequestGeneration.current;
     try {
       const listedDevices = await listDevices(token);
-      if (deviceListRequestGeneration.current !== generation) {
+      if (
+        authenticationGeneration.current !== authGeneration
+        || deviceListRequestGeneration.current !== generation
+      ) {
         return;
       }
       setDevices(listedDevices);
@@ -74,14 +79,19 @@ export default function App() {
         setConnectionError(null);
       }
     } catch (error) {
-      if (deviceListRequestGeneration.current !== generation) {
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        if (authenticationGeneration.current === authGeneration) {
+          logout();
+        }
         return;
       }
-      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
-        logout();
-      } else {
-        setApiError(error instanceof Error ? error.message : "Could not refresh devices");
+      if (
+        authenticationGeneration.current !== authGeneration
+        || deviceListRequestGeneration.current !== generation
+      ) {
+        return;
       }
+      setApiError(error instanceof Error ? error.message : "Could not refresh devices");
     }
   }, [logout]);
 
@@ -104,6 +114,7 @@ export default function App() {
     void listDevices(restoredToken).then((listedDevices) => {
       if (!disposed) {
         setDevices(listedDevices);
+        authenticationGeneration.current += 1;
         setAccessToken(restoredToken);
         selectedDeviceIdRef.current = "";
         setDeviceId("");
@@ -135,6 +146,7 @@ export default function App() {
       const token = await login(username, password);
       const listedDevices = await listDevices(token);
       storeAccessToken(token);
+      authenticationGeneration.current += 1;
       setAccessToken(token);
       setDevices(listedDevices);
       selectedDeviceIdRef.current = "";
@@ -160,6 +172,7 @@ export default function App() {
     }
 
     const token = accessToken;
+    const authGeneration = authenticationGeneration.current;
     let disposed = false;
     let closeSubscription: () => void = () => {};
 
@@ -171,12 +184,12 @@ export default function App() {
         natsToken,
         () => {
           if (!disposed) {
-            void refreshDevices(token);
+            void refreshDevices(token, authGeneration);
           }
         },
         () => {
           if (!disposed) {
-            void refreshDevices(token);
+            void refreshDevices(token, authGeneration);
           }
         },
         (error) => {
