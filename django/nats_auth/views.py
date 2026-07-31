@@ -76,6 +76,9 @@ def get_nats_permissions(request):
         {
             "account": "APP",
             "pub": {"allow": [], "deny": ["devices.>"]},
-            "sub": {"allow": ["devices.*.measurements"], "deny": []},
+            "sub": {
+                "allow": ["devices.created", "devices.*.measurements"],
+                "deny": [],
+            },
         }
     )

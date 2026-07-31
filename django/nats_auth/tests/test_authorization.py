@@ -39,7 +39,7 @@ class NatsAuthorizationTests(APITestCase):
                 "account": "APP",
                 "pub": {"allow": [], "deny": ["devices.>"]},
                 "sub": {
-                    "allow": ["devices.*.measurements"],
+                    "allow": ["devices.created", "devices.*.measurements"],
                     "deny": [],
                 },
             },
