@@ -2,6 +2,7 @@ import base64
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
@@ -48,6 +49,23 @@ class DeviceProvisioningTests(APITestCase):
         self.assertIn("key", response.data)
         self.assertEqual(len(callbacks), 1)
         publish.assert_called_once_with(Device.objects.get(id=response.data["id"]).id)
+
+    @patch("devices.views.publish_device_created_best_effort")
+    def test_rolled_back_staff_provisioning_does_not_publish_device_event(
+        self, publish
+    ):
+        self.client.force_authenticate(self.staff)
+
+        with self.captureOnCommitCallbacks(execute=True) as callbacks:
+            with transaction.atomic():
+                response = self.client.post("/api/devices/", {"name": "rolled-back"})
+                device_id = response.data["id"]
+                transaction.set_rollback(True)
+
+        self.assertEqual(response.status_code, 201)
+        self.assertFalse(Device.objects.filter(id=device_id).exists())
+        self.assertEqual(callbacks, [])
+        publish.assert_not_called()
 
     def test_non_staff_cannot_create_or_rotate(self):
         self.client.force_authenticate(self.user)
