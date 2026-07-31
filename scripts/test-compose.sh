@@ -40,8 +40,9 @@ grep -Eq 'no_tls:[[:space:]]*true' nats.conf
 grep -q './get-issuer-key.sh' ReadMe.md
 test -x get-issuer-key.sh
 head -n 1 get-issuer-key.sh | grep -qx '#!/bin/sh'
-grep -q 'nats-keys' get-issuer-key.sh
-grep -q 'nsc generate nkey --account' get-issuer-key.sh
+grep -Fq -- '-v "$PWD/nats-keys:/work"' get-issuer-key.sh
+grep -Fq -- '-w /work' get-issuer-key.sh
+grep -Eq '\./nsc[[:space:]]+generate[[:space:]]+nkey[[:space:]]+--account[[:space:]]*>[[:space:]]*account-issuer\.txt' get-issuer-key.sh
 grep -A1 'first generated line' ReadMe.md | grep -q 'ACCOUNT_SIGNER_SEED'
 grep -A1 'the second is' ReadMe.md | grep -q 'ACCOUNT_SIGNER_PUB'
 grep -q 'nats-keys' ReadMe.md
