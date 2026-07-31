@@ -56,22 +56,20 @@ key, for example, with:
 openssl rand -base64 32
 ```
 
-Generate an NATS account signer pair with the pinned `nsc 2.10.2` included in
-this immutable `nats-box` image:
+Generate an NATS account signer pair:
 
 ```sh
-docker run --rm \
-  natsio/nats-box:0.17.0@sha256:38beb03a5acc875570fa4969bc0353fd9b4a633d33b101309f239a3f22dd2162 \
-  nsc generate nkey --account
+./get-issuer-key.sh
 ```
 
-The command writes two lines: set `ACCOUNT_SIGNER_SEED` to the first line and
-`ACCOUNT_SIGNER_PUB` to the second line. They are one matching account NKey
-pair. Run this locally, copy the values directly into `.env`, and do not paste
-or commit the output elsewhere. Also set independent random values for the
-PostgreSQL, Django, NATS auth-user, and NATS publisher credentials. Set
-`DJANGO_SUPERUSER_USERNAME`, `DJANGO_SUPERUSER_PASSWORD`, and optionally
-`DJANGO_SUPERUSER_EMAIL` to create a local staff account at container startup.
+The first generated line is `ACCOUNT_SIGNER_SEED`; the second is
+`ACCOUNT_SIGNER_PUB`. They are one matching account NKey pair. The output is
+also stored in the ignored `nats-keys/` directory. Run this locally and copy
+the values directly into `.env`. Never commit or share the seed. Also set
+independent random values for the PostgreSQL, Django, NATS auth-user, and NATS
+publisher credentials. Set `DJANGO_SUPERUSER_USERNAME`,
+`DJANGO_SUPERUSER_PASSWORD`, and optionally `DJANGO_SUPERUSER_EMAIL` to create
+a local staff account at container startup.
 
 Never reuse values from examples or commit `.env`. If a real secret has ever
 been committed or shared, remove it from use and rotate it; deleting it from
@@ -138,19 +136,20 @@ python3 -m venv .venv
 .venv/bin/pip install requests
 ```
 
-Then provide the ID and one-time key returned during provisioning:
+Put the device ID and one-time key returned during provisioning in `.env` as
+`DEVICE_ID` and `DEVICE_KEY`. Then run:
 
 ```sh
 .venv/bin/python iot-device-sim.py \
   --url http://localhost/api/device-measurements/ \
-  --device-id DEVICE_UUID \
-  --key BASE64_KEY_RETURNED_ONCE \
   --name temperature \
   --value 21.7
 ```
 
-The placeholder above is not a usable device key. The simulator signs the
-exact JSON body with HMAC-SHA256 and communicates only over HTTP.
+`--device-id` and `--key` remain available as overrides, but storing
+provisioned values in `.env` avoids exposing real credentials in shell history.
+The simulator signs the exact JSON body with HMAC-SHA256 and communicates only
+over HTTP.
 
 In React, select the device to see its latest measurement and its current
 history page. Live NATS notifications update the latest value. A full history
