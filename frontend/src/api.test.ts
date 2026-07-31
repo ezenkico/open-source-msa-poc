@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getMeasurements, listDevices, login } from "./api";
+import { getLatest, getMeasurements, listDevices, login } from "./api";
 
 function response(body: unknown, status = 200): Response {
   return {
@@ -49,5 +49,11 @@ describe("API adapter", () => {
       name: "ApiError",
       status: 401,
     });
+  });
+
+  it("returns null when the latest measurement endpoint responds with 404", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ detail: "missing" }, 404)));
+
+    await expect(getLatest("device-1", "access-token")).resolves.toBeNull();
   });
 });

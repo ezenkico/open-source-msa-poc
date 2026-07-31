@@ -9,6 +9,7 @@ import {
 const now = 1_700_000_000_000;
 const expBeforeNowToken = "eyJhbGciOiJub25lIn0.eyJleHAiOjE2OTk5OTk5OTl9.signature";
 const expAfterNowToken = "eyJhbGciOiJub25lIn0.eyJleHAiOjE3MDAwMDAwMDF9.signature";
+const futurePayload = "eyJleHAiOjE3MDAwMDAwMDF9";
 
 afterEach(() => localStorage.clear());
 
@@ -40,6 +41,21 @@ describe("access-token session storage", () => {
 
     expect(restoreAccessToken(now)).toBeNull();
     expect(localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)).toBeNull();
+  });
+
+  it("removes malformed compact tokens even when their payload has a future expiry", () => {
+    const malformedTokens = [
+      `not-a-JWT-header.${futurePayload}.anything`,
+      `eyJhbGciOiJub25lIn0.${futurePayload}`,
+      `eyJhbGciOiJub25lIn0.${futurePayload}.signature.extra`,
+    ];
+
+    for (const token of malformedTokens) {
+      localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, token);
+
+      expect(restoreAccessToken(now)).toBeNull();
+      expect(localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)).toBeNull();
+    }
   });
 
   it("clears only the persisted access token", () => {

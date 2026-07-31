@@ -15,14 +15,23 @@ export function restoreAccessToken(nowMs = Date.now()): string | null {
       return null;
     }
 
-    const payloadSegment = token.split(".")[1];
-    if (payloadSegment === undefined) {
+    const segments = token.split(".");
+    if (segments.length !== 3 || segments.some((segment) => segment.length === 0)) {
       throw new Error("Access token is not a JWT");
     }
 
-    const base64Payload = payloadSegment.replace(/-/g, "+").replace(/_/g, "/");
-    const paddedPayload = base64Payload.padEnd(Math.ceil(base64Payload.length / 4) * 4, "=");
-    const payload: unknown = JSON.parse(atob(paddedPayload));
+    const [headerSegment, payloadSegment] = segments;
+    const decodeJsonSegment = (segment: string): unknown => {
+      const base64 = segment.replace(/-/g, "+").replace(/_/g, "/");
+      const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+      return JSON.parse(atob(padded));
+    };
+    const header = decodeJsonSegment(headerSegment);
+    if (typeof header !== "object" || header === null) {
+      throw new Error("Access token has an invalid header");
+    }
+
+    const payload = decodeJsonSegment(payloadSegment);
     const exp = typeof payload === "object" && payload !== null ? (payload as { exp?: unknown }).exp : undefined;
 
     if (typeof exp !== "number" || !Number.isFinite(exp) || exp * 1000 <= nowMs) {
