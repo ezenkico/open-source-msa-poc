@@ -165,6 +165,24 @@ describe("App", () => {
     );
   });
 
+  it("reconciles devices after the global subscription becomes ready", async () => {
+    const subscriptionReady = deferred<() => void>();
+    api.listDevices
+      .mockResolvedValueOnce([DEVICE_ONE])
+      .mockResolvedValueOnce([DEVICE_ONE, DEVICE_THREE]);
+    nats.subscribeToDeviceCreations.mockReturnValue(subscriptionReady.promise);
+    render(<App />);
+
+    await logIn();
+    expect(screen.queryByRole("option", { name: DEVICE_THREE.name })).not.toBeInTheDocument();
+    await waitFor(() => expect(nats.subscribeToDeviceCreations).toHaveBeenCalledOnce());
+
+    subscriptionReady.resolve(closeDeviceCreations);
+
+    expect(await screen.findByRole("option", { name: DEVICE_THREE.name })).toBeInTheDocument();
+    expect(api.listDevices).toHaveBeenNthCalledWith(2, "access-token");
+  });
+
   it("refreshes the authoritative device list after a creation event", async () => {
     render(<App />);
     await logIn();

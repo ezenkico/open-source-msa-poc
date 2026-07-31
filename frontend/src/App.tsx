@@ -206,6 +206,7 @@ export default function App() {
         close();
       } else {
         closeSubscription = close;
+        void refreshDevices(token, authGeneration);
       }
     }).catch((error: unknown) => {
       if (!disposed) {

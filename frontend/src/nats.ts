@@ -93,6 +93,7 @@ export async function subscribeToDeviceCreations(
   const server = `${scheme}://${window.location.host}/nats`;
   const connection = await connect({ servers: [server], token });
   const subscription = connection.subscribe("devices.created");
+  await connection.flush();
   const codec = StringCodec();
   let closed = false;
 

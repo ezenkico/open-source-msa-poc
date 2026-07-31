@@ -41,9 +41,18 @@ function iterable<T>(values: T[]) {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function configureConnection(messages: unknown[], statuses: unknown[] = []) {
   const unsubscribe = vi.fn();
   const close = vi.fn().mockResolvedValue(undefined);
+  const flush = vi.fn().mockResolvedValue(undefined);
   const subscription = {
     unsubscribe,
     [Symbol.asyncIterator]: async function* () {
@@ -58,10 +67,11 @@ function configureConnection(messages: unknown[], statuses: unknown[] = []) {
   });
   nats.connect.mockResolvedValue({
     subscribe,
+    flush,
     status: vi.fn().mockReturnValue(iterable(statuses)),
     close,
   });
-  return { close, subscribe, unsubscribe };
+  return { close, flush, subscribe, unsubscribe };
 }
 
 afterEach(() => {
@@ -122,6 +132,31 @@ describe("NATS adapter", () => {
     expect(connection.subscribe).toHaveBeenCalledWith("devices.created");
     await waitFor(() => expect(onDeviceCreated).toHaveBeenCalledOnce());
     expect(onDeviceCreated).toHaveBeenCalledWith();
+  });
+
+  it("waits for device-creation subscription readiness before resolving", async () => {
+    const ready = deferred<void>();
+    const connection = configureConnection([]);
+    connection.flush.mockReturnValue(ready.promise);
+    let resolved = false;
+
+    const cleanupPromise = subscribeToDeviceCreations(
+      "nats-token",
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+    ).then((cleanup) => {
+      resolved = true;
+      return cleanup;
+    });
+
+    await waitFor(() => expect(connection.subscribe).toHaveBeenCalledWith("devices.created"));
+    expect(connection.flush).toHaveBeenCalledOnce();
+    expect(resolved).toBe(false);
+
+    ready.resolve();
+    await cleanupPromise;
+    expect(resolved).toBe(true);
   });
 
   it("reports an invalid device-created notification without signaling the UI", async () => {
