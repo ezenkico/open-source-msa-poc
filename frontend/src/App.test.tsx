@@ -4,6 +4,14 @@ import App, { PAGE_SIZE } from "./App";
 import type { Measurement } from "./measurementState";
 
 const api = vi.hoisted(() => ({
+  ApiError: class ApiError extends Error {
+    readonly status: number;
+
+    constructor(status: number) {
+      super(`Request failed with status ${status}`);
+      this.status = status;
+    }
+  },
   login: vi.fn(),
   getNatsToken: vi.fn(),
   listDevices: vi.fn(),
@@ -12,11 +20,19 @@ const api = vi.hoisted(() => ({
 }));
 
 const nats = vi.hoisted(() => ({
+  subscribeToDeviceCreations: vi.fn(),
   subscribeToMeasurements: vi.fn(),
+}));
+
+const session = vi.hoisted(() => ({
+  clearAccessToken: vi.fn(),
+  restoreAccessToken: vi.fn(),
+  storeAccessToken: vi.fn(),
 }));
 
 vi.mock("./api", () => api);
 vi.mock("./nats", () => nats);
+vi.mock("./session", () => session);
 
 const DEVICE_ONE = {
   id: "a1111111-1111-4111-8111-111111111111",
@@ -26,6 +42,7 @@ const DEVICE_ONE = {
   updated_at: "2026-07-26T12:00:00Z",
 };
 const DEVICE_TWO = { ...DEVICE_ONE, id: "b2222222-2222-4222-8222-222222222222", name: "Pump" };
+const DEVICE_THREE = { ...DEVICE_ONE, id: "c3333333-3333-4333-8333-333333333333", name: "Chiller" };
 
 function measurement(entry_index: number, device_id = DEVICE_ONE.id): Measurement {
   return {
@@ -46,23 +63,32 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-async function logInAndSelect(deviceId = DEVICE_ONE.id) {
+async function logIn() {
   fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "reader" } });
   fireEvent.change(screen.getByLabelText(/password/i), { target: { value: "password" } });
   fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
 
   await screen.findByRole("option", { name: DEVICE_ONE.name });
+}
+
+async function logInAndSelect(deviceId = DEVICE_ONE.id) {
+  await logIn();
   fireEvent.change(screen.getByLabelText(/selected device/i), { target: { value: deviceId } });
 }
 
 describe("App", () => {
   let notification: (value: Measurement) => void;
   let reconnect: () => void;
+  let deviceCreated: () => void;
+  let deviceReconnect: () => void;
   let close: ReturnType<typeof vi.fn>;
+  let closeDeviceCreations: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     close = vi.fn();
+    closeDeviceCreations = vi.fn();
+    session.restoreAccessToken.mockReturnValue(null);
     api.login.mockResolvedValue("access-token");
     api.getNatsToken.mockResolvedValue("nats-token");
     api.listDevices.mockResolvedValue([DEVICE_ONE, DEVICE_TWO]);
@@ -75,6 +101,156 @@ describe("App", () => {
         return close;
       },
     );
+    nats.subscribeToDeviceCreations.mockImplementation(
+      async (_token, onDeviceCreated, onReconnect) => {
+        deviceCreated = onDeviceCreated;
+        deviceReconnect = onReconnect;
+        return closeDeviceCreations;
+      },
+    );
+  });
+
+  it("restores a valid session only after its device list is validated", async () => {
+    session.restoreAccessToken.mockReturnValue("restored-token");
+    api.listDevices.mockResolvedValue([DEVICE_ONE]);
+
+    render(<App />);
+
+    expect(screen.queryByRole("button", { name: /sign in/i })).not.toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: DEVICE_ONE.name })).toBeInTheDocument();
+    expect(api.listDevices).toHaveBeenCalledWith("restored-token");
+  });
+
+  it("persists the access token after login and device listing succeed", async () => {
+    render(<App />);
+
+    await logInAndSelect();
+
+    expect(session.storeAccessToken).toHaveBeenCalledWith("access-token");
+  });
+
+  it("clears a restored session rejected by the API", async () => {
+    session.restoreAccessToken.mockReturnValue("rejected-token");
+    api.listDevices.mockRejectedValue(new api.ApiError(401));
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /sign in/i })).toBeInTheDocument();
+    expect(session.clearAccessToken).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText(/selected device/i)).not.toBeInTheDocument();
+  });
+
+  it("does not list devices when stored access-token restoration returns null", async () => {
+    session.restoreAccessToken.mockReturnValue(null);
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /sign in/i })).toBeInTheDocument();
+    expect(api.listDevices).not.toHaveBeenCalled();
+  });
+
+  it("starts one global device-creation subscription after authentication", async () => {
+    render(<App />);
+
+    await logIn();
+
+    await waitFor(() => expect(nats.subscribeToDeviceCreations).toHaveBeenCalledOnce());
+    expect(nats.subscribeToDeviceCreations).toHaveBeenCalledWith(
+      "nats-token",
+      expect.any(Function),
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
+  it("refreshes the authoritative device list after a creation event", async () => {
+    render(<App />);
+    await logIn();
+    await waitFor(() => expect(nats.subscribeToDeviceCreations).toHaveBeenCalledOnce());
+    api.listDevices.mockClear();
+    api.listDevices.mockResolvedValue([DEVICE_ONE, DEVICE_TWO, DEVICE_THREE]);
+
+    act(() => deviceCreated());
+
+    expect(await screen.findByRole("option", { name: DEVICE_THREE.name })).toBeInTheDocument();
+    expect(api.listDevices).toHaveBeenCalledOnce();
+    expect(api.listDevices).toHaveBeenCalledWith("access-token");
+  });
+
+  it("refreshes the authoritative device list after a global reconnect", async () => {
+    render(<App />);
+    await logIn();
+    await waitFor(() => expect(nats.subscribeToDeviceCreations).toHaveBeenCalledOnce());
+    api.listDevices.mockClear();
+    api.listDevices.mockResolvedValue([DEVICE_THREE]);
+
+    act(() => deviceReconnect());
+
+    expect(await screen.findByRole("option", { name: DEVICE_THREE.name })).toBeInTheDocument();
+    expect(api.listDevices).toHaveBeenCalledOnce();
+    expect(api.listDevices).toHaveBeenCalledWith("access-token");
+  });
+
+  it("keeps the selected device when an authoritative refresh still returns it", async () => {
+    render(<App />);
+    await logInAndSelect();
+    await waitFor(() => expect(nats.subscribeToDeviceCreations).toHaveBeenCalledOnce());
+    api.listDevices.mockResolvedValue([DEVICE_ONE, DEVICE_THREE]);
+
+    act(() => deviceCreated());
+
+    await screen.findByRole("option", { name: DEVICE_THREE.name });
+    expect(screen.getByLabelText(/selected device/i)).toHaveValue(DEVICE_ONE.id);
+  });
+
+  it("does not let an older overlapping refresh replace a newer device list", async () => {
+    const older = deferred<typeof DEVICE_ONE[]>();
+    const newer = deferred<typeof DEVICE_ONE[]>();
+    render(<App />);
+    await logIn();
+    await waitFor(() => expect(nats.subscribeToDeviceCreations).toHaveBeenCalledOnce());
+    api.listDevices.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+
+    act(() => {
+      deviceCreated();
+      deviceCreated();
+    });
+    await act(async () => {
+      newer.resolve([DEVICE_ONE, DEVICE_THREE]);
+      await newer.promise;
+    });
+    expect(await screen.findByRole("option", { name: DEVICE_THREE.name })).toBeInTheDocument();
+
+    await act(async () => {
+      older.resolve([DEVICE_TWO]);
+      await older.promise;
+    });
+    expect(screen.getByRole("option", { name: DEVICE_THREE.name })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: DEVICE_TWO.name })).not.toBeInTheDocument();
+  });
+
+  it("closes the global device subscription when the component unmounts", async () => {
+    const view = render(<App />);
+    await logIn();
+    await waitFor(() => expect(nats.subscribeToDeviceCreations).toHaveBeenCalledOnce());
+
+    view.unmount();
+
+    await waitFor(() => expect(closeDeviceCreations).toHaveBeenCalledOnce());
+  });
+
+  it("logs out and closes the global subscription when a refresh is unauthorized", async () => {
+    render(<App />);
+    await logIn();
+    await waitFor(() => expect(nats.subscribeToDeviceCreations).toHaveBeenCalledOnce());
+    api.listDevices.mockRejectedValue(new api.ApiError(401));
+
+    act(() => deviceCreated());
+
+    expect(await screen.findByRole("button", { name: /sign in/i })).toBeInTheDocument();
+    expect(session.clearAccessToken).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText(/selected device/i)).not.toBeInTheDocument();
+    await waitFor(() => expect(closeDeviceCreations).toHaveBeenCalledOnce());
   });
 
   it("logs in, lists devices, and loads authoritative state for the selected device", async () => {

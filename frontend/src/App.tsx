@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
+  ApiError,
   getLatest,
   getMeasurements,
   getNatsToken,
@@ -7,12 +8,13 @@ import {
   login,
   type Device,
 } from "./api";
-import { subscribeToMeasurements } from "./nats";
+import { subscribeToDeviceCreations, subscribeToMeasurements } from "./nats";
 import {
   mergeNotification,
   type Measurement,
   type MeasurementState,
 } from "./measurementState";
+import { clearAccessToken, restoreAccessToken, storeAccessToken } from "./session";
 
 export const PAGE_SIZE = 50;
 
@@ -33,12 +35,55 @@ export default function App() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [isStarting, setIsStarting] = useState(true);
   const [devices, setDevices] = useState<Device[]>([]);
   const [deviceId, setDeviceId] = useState("");
   const [measurementState, setMeasurementState] = useState<MeasurementState>(EMPTY_STATE);
   const [apiError, setApiError] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const selectionGeneration = useRef(0);
+  const deviceListRequestGeneration = useRef(0);
+  const selectedDeviceIdRef = useRef("");
+
+  const logout = useCallback(() => {
+    clearAccessToken();
+    selectionGeneration.current += 1;
+    deviceListRequestGeneration.current += 1;
+    selectedDeviceIdRef.current = "";
+    setAccessToken(null);
+    setDevices([]);
+    setDeviceId("");
+    setMeasurementState(EMPTY_STATE);
+    setConnectionError(null);
+  }, []);
+
+  const refreshDevices = useCallback(async (token: string) => {
+    const generation = ++deviceListRequestGeneration.current;
+    try {
+      const listedDevices = await listDevices(token);
+      if (deviceListRequestGeneration.current !== generation) {
+        return;
+      }
+      setDevices(listedDevices);
+      setApiError(null);
+      if (selectedDeviceIdRef.current && !listedDevices.some((device) => device.id === selectedDeviceIdRef.current)) {
+        selectionGeneration.current += 1;
+        selectedDeviceIdRef.current = "";
+        setDeviceId("");
+        setMeasurementState(EMPTY_STATE);
+        setConnectionError(null);
+      }
+    } catch (error) {
+      if (deviceListRequestGeneration.current !== generation) {
+        return;
+      }
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        logout();
+      } else {
+        setApiError(error instanceof Error ? error.message : "Could not refresh devices");
+      }
+    }
+  }, [logout]);
 
   const loadAuthoritativeState = useCallback(async (selectedDeviceId: string, token: string) => {
     const [latest, rows] = await Promise.all([
@@ -48,15 +93,53 @@ export default function App() {
     return { latest, rows, missingRange: null };
   }, []);
 
-  async function submitLogin(event: any) {
+  useEffect(() => {
+    const restoredToken = restoreAccessToken();
+    if (!restoredToken) {
+      setIsStarting(false);
+      return;
+    }
+
+    let disposed = false;
+    void listDevices(restoredToken).then((listedDevices) => {
+      if (!disposed) {
+        setDevices(listedDevices);
+        setAccessToken(restoredToken);
+        selectedDeviceIdRef.current = "";
+        setDeviceId("");
+      }
+    }).catch((error: unknown) => {
+      if (disposed) {
+        return;
+      }
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        logout();
+      } else {
+        setApiError(error instanceof Error ? error.message : "Could not restore the session");
+      }
+    }).finally(() => {
+      if (!disposed) {
+        setIsStarting(false);
+      }
+    });
+
+    return () => {
+      disposed = true;
+    };
+  }, [logout]);
+
+  async function submitLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setApiError(null);
     try {
       const token = await login(username, password);
       const listedDevices = await listDevices(token);
+      storeAccessToken(token);
       setAccessToken(token);
       setDevices(listedDevices);
+      selectedDeviceIdRef.current = "";
       setDeviceId("");
+      setMeasurementState(EMPTY_STATE);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : "Login failed");
     }
@@ -64,11 +147,64 @@ export default function App() {
 
   function selectDevice(selectedDeviceId: string) {
     selectionGeneration.current += 1;
+    selectedDeviceIdRef.current = selectedDeviceId;
     setDeviceId(selectedDeviceId);
     setConnectionError(null);
     setApiError(null);
     setMeasurementState(EMPTY_STATE);
   }
+
+  useEffect(() => {
+    if (!accessToken) {
+      return;
+    }
+
+    const token = accessToken;
+    let disposed = false;
+    let closeSubscription: () => void = () => {};
+
+    void getNatsToken(token).then((natsToken) => {
+      if (disposed) {
+        return undefined;
+      }
+      return subscribeToDeviceCreations(
+        natsToken,
+        () => {
+          if (!disposed) {
+            void refreshDevices(token);
+          }
+        },
+        () => {
+          if (!disposed) {
+            void refreshDevices(token);
+          }
+        },
+        (error) => {
+          if (!disposed) {
+            setConnectionError(error.message);
+          }
+        },
+      );
+    }).then((close) => {
+      if (!close) {
+        return;
+      }
+      if (disposed) {
+        close();
+      } else {
+        closeSubscription = close;
+      }
+    }).catch((error: unknown) => {
+      if (!disposed) {
+        setConnectionError(error instanceof Error ? error.message : "Could not connect to device notifications");
+      }
+    });
+
+    return () => {
+      disposed = true;
+      closeSubscription();
+    };
+  }, [accessToken, refreshDevices]);
 
   useEffect(() => {
     if (!accessToken || !deviceId) {
@@ -203,7 +339,7 @@ export default function App() {
   return (
     <main>
       <h1>IoT measurements</h1>
-      {!accessToken && (
+      {!isStarting && !accessToken && (
         <form onSubmit={submitLogin}>
           <label>
             Username
