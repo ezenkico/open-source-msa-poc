@@ -31,14 +31,16 @@ grep -A3 -E 'location[[:space:]]+/[[:space:]]*\{' nginx/default.conf |
 grep -Eq 'auth_users:[[:space:]]*\[[[:space:]]*"auth",[[:space:]]*"publisher"[[:space:]]*\]' nats.conf
 grep -Eq 'account:[[:space:]]*AUTH' nats.conf
 grep -Eq 'user:[[:space:]]*"publisher"' nats.conf
-grep -Eq 'publish:[[:space:]]*\{[[:space:]]*allow:[[:space:]]*\[[[:space:]]*"devices\.\*\.measurements"[[:space:]]*\]' nats.conf
+grep -Eq 'publish:[[:space:]]*\{[[:space:]]*allow:[[:space:]]*\[[[:space:]]*"devices\.created",[[:space:]]*"devices\.\*\.measurements"[[:space:]]*\]' nats.conf
 grep -Eq 'subscribe:[[:space:]]*\{[[:space:]]*deny:[[:space:]]*\[[[:space:]]*">"[[:space:]]*\]' nats.conf
 grep -Eq 'system_account:[[:space:]]*SYS' nats.conf
 grep -Eq 'port:[[:space:]]*8080' nats.conf
 grep -Eq 'no_tls:[[:space:]]*true' nats.conf
 
-grep -q 'natsio/nats-box:0.17.0@sha256:38beb03a5acc875570fa4969bc0353fd9b4a633d33b101309f239a3f22dd2162' ReadMe.md
-grep -q 'nsc generate nkey --account' ReadMe.md
-grep -q 'ACCOUNT_SIGNER_SEED.*first line' ReadMe.md
-grep -q 'ACCOUNT_SIGNER_PUB.*second line' ReadMe.md
+grep -q './get-issuer-key.sh' ReadMe.md
+test -f get-issuer-key.sh
+grep -q 'nsc generate nkey --account' get-issuer-key.sh
+grep -A1 'first generated line' ReadMe.md | grep -q 'ACCOUNT_SIGNER_SEED'
+grep -A1 'the second is' ReadMe.md | grep -q 'ACCOUNT_SIGNER_PUB'
+grep -q 'nats-keys' ReadMe.md
 test ! -e setup-nkey.sh
