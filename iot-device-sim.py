@@ -2,12 +2,33 @@
 
 import argparse
 import base64
+import binascii
 import hashlib
 import hmac
 import json
+import os
+import shlex
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import MutableMapping
 
 import requests
+
+
+def load_dotenv(path: Path, environ: MutableMapping[str, str]) -> None:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line.removeprefix("export ")
+        if "=" not in line:
+            continue
+
+        name, value = line.split("=", 1)
+        values = shlex.split(value, comments=True)
+        if len(values) == 1:
+            environ.setdefault(name.strip(), values[0])
 
 
 def encode_measurement(name: str, value: float, measured_at: str) -> bytes:
@@ -67,18 +88,35 @@ def _current_utc_timestamp() -> str:
 
 
 def main() -> None:
+    dotenv_path = Path(__file__).resolve().parent / ".env"
+    if dotenv_path.exists():
+        load_dotenv(dotenv_path, os.environ)
+
     parser = argparse.ArgumentParser(
         description="Send one signed measurement to the IoT proof of concept."
     )
     parser.add_argument("--url", default="http://localhost")
-    parser.add_argument("--device-id", required=True)
-    parser.add_argument("--key", required=True, help="Base64 provisioning key")
+    parser.add_argument("--device-id", default=os.environ.get("DEVICE_ID"))
+    parser.add_argument(
+        "--key", default=os.environ.get("DEVICE_KEY"), help="Base64 provisioning key"
+    )
     parser.add_argument("--name", required=True)
     parser.add_argument("--value", required=True, type=float)
     parser.add_argument("--measured-at")
     args = parser.parse_args()
 
-    key = base64.b64decode(args.key, validate=True)
+    missing_credentials = []
+    if not args.device_id:
+        missing_credentials.append("--device-id or DEVICE_ID")
+    if not args.key:
+        missing_credentials.append("--key or DEVICE_KEY")
+    if missing_credentials:
+        parser.error("; ".join(missing_credentials) + " is required")
+
+    try:
+        key = base64.b64decode(args.key, validate=True)
+    except (binascii.Error, ValueError):
+        parser.error("--key/DEVICE_KEY must be valid base64")
     result = send_measurement(
         args.url,
         args.device_id,
