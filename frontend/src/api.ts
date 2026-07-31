@@ -8,10 +8,20 @@ export type Device = {
   updated_at: string;
 };
 
-async function request(path: string, init: RequestInit = {}) {
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number) {
+    super(`Request failed with status ${status}`);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+async function request(path: string, init: RequestInit = {}, acceptedStatuses: readonly number[] = []) {
   const response = await fetch(path, init);
-  if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}`);
+  if (!response.ok && !acceptedStatuses.includes(response.status)) {
+    throw new ApiError(response.status);
   }
   return response;
 }
@@ -48,12 +58,13 @@ export async function listDevices(accessToken: string): Promise<Device[]> {
 }
 
 export async function getLatest(deviceId: string, accessToken: string): Promise<Measurement | null> {
-  const response = await fetch(`/api/devices/${deviceId}/measurements/latest/`, { headers: bearer(accessToken) });
+  const response = await request(
+    `/api/devices/${deviceId}/measurements/latest/`,
+    { headers: bearer(accessToken) },
+    [404],
+  );
   if (response.status === 404) {
     return null;
-  }
-  if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}`);
   }
   return response.json() as Promise<Measurement>;
 }

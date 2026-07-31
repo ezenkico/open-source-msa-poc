@@ -41,4 +41,13 @@ describe("API adapter", () => {
 
     await expect(listDevices("access-token")).rejects.toThrow("status 503");
   });
+
+  it("rejects unauthorized device requests with an API status error", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ detail: "expired" }, 401)));
+
+    await expect(listDevices("expired")).rejects.toMatchObject({
+      name: "ApiError",
+      status: 401,
+    });
+  });
 });
