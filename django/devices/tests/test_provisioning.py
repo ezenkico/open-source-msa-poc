@@ -1,4 +1,5 @@
 import base64
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import override_settings
@@ -35,6 +36,18 @@ class DeviceProvisioningTests(APITestCase):
 
         listing = self.client.get("/api/devices/")
         self.assertNotIn("key", listing.data[0])
+
+    @patch("devices.views.publish_device_created_best_effort")
+    def test_staff_provisioning_schedules_device_created_event(self, publish):
+        self.client.force_authenticate(self.staff)
+
+        with self.captureOnCommitCallbacks(execute=True) as callbacks:
+            response = self.client.post("/api/devices/", {"name": "simulator"})
+
+        self.assertEqual(response.status_code, 201)
+        self.assertIn("key", response.data)
+        self.assertEqual(len(callbacks), 1)
+        publish.assert_called_once_with(Device.objects.get(id=response.data["id"]).id)
 
     def test_non_staff_cannot_create_or_rotate(self):
         self.client.force_authenticate(self.user)

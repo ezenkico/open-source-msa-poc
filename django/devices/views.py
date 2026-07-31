@@ -16,7 +16,7 @@ from .crypto import (
     generate_device_key,
 )
 from .models import Device, Measurement
-from .nats import publish_measurement_best_effort
+from .nats import publish_device_created_best_effort, publish_measurement_best_effort
 from .serializers import (
     DeviceCreateSerializer,
     DeviceSerializer,
@@ -46,6 +46,9 @@ class DeviceListCreateView(APIView):
             name=serializer.validated_data["name"],
             key_ciphertext=ciphertext,
             key_nonce=nonce,
+        )
+        transaction.on_commit(
+            lambda device_id=device.id: publish_device_created_best_effort(device_id)
         )
         data = DeviceSerializer(device).data
         data["key"] = encode_device_key(key)

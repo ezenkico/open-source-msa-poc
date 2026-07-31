@@ -7,11 +7,13 @@ from django.utils import timezone
 
 from devices.models import Device, Measurement
 from devices.nats import (
+    device_created_payload,
     notification_payload,
     notification_subject,
+    publish_device_created_best_effort,
     publish_measurement_best_effort,
 )
-from devices.serializers import MeasurementSerializer
+from devices.serializers import DeviceSerializer, MeasurementSerializer
 
 
 @override_settings(NATS_PUBLISH_URL="nats://publisher:secret@nats:4222")
@@ -41,3 +43,17 @@ class NotificationTests(TestCase):
         publish.side_effect = RuntimeError("unavailable")
 
         self.assertIsNone(publish_measurement_best_effort(self.measurement.id))
+
+    def test_device_created_payload_contains_only_public_device_fields(self):
+        payload = json.loads(device_created_payload(self.device))
+
+        self.assertEqual(payload, DeviceSerializer(self.device).data)
+        self.assertNotIn("key", payload)
+        self.assertNotIn("key_ciphertext", payload)
+        self.assertNotIn("key_nonce", payload)
+
+    @patch("devices.nats._publish", new_callable=AsyncMock)
+    def test_device_created_publish_failure_is_silently_swallowed(self, publish):
+        publish.side_effect = RuntimeError("unavailable")
+
+        self.assertIsNone(publish_device_created_best_effort(self.device.id))
