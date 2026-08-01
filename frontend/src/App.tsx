@@ -109,8 +109,6 @@ export default function App() {
   ): Promise<MeasurementPage | null> => {
     async function requestPage(targetOffset: number, correctionAttempted: boolean): Promise<MeasurementPage | null> {
       const requestGeneration = ++pageRequestGeneration.current;
-      offsetRef.current = targetOffset;
-      setOffset(targetOffset);
       setIsPageLoading(true);
       setApiError(null);
 
@@ -118,7 +116,6 @@ export default function App() {
         selectionGeneration.current === selectedGeneration
         && selectedDeviceIdRef.current === selectedDeviceId
         && pageRequestGeneration.current === requestGeneration
-        && offsetRef.current === targetOffset
         && orderRef.current === requestedOrder
       );
 

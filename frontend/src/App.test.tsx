@@ -1166,6 +1166,16 @@ describe("App", () => {
     expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
     expect(screen.getAllByRole("row")).toHaveLength(PAGE_SIZE + 1);
     expect(screen.getAllByRole("row")[1]).toHaveTextContent("120");
+
+    api.getMeasurements.mockClear();
+    api.getMeasurements.mockResolvedValue(measurementPage(firstPageRows, { total: 120 }));
+    act(() => reconnect());
+
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=0&order=desc`,
+    ));
   });
 
   it("corrects an empty out-of-range page exactly once without committing it", async () => {
