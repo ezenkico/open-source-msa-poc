@@ -126,8 +126,9 @@ Live NATS notifications continue to update the latest-measurement display.
 They do not insert into or reorder the currently displayed page. This keeps a
 user's page stable while measurements arrive.
 
-Gap recovery continues fetching the missing exclusive/inclusive index range and
-merging `response.results` into the existing measurement state. A NATS
+Gap recovery continues fetching the missing exclusive/inclusive index range.
+It consumes `response.results` to complete recovery and clear the missing-range
+state, but it does not rewrite the currently displayed paginated rows. A NATS
 reconnect reloads the currently selected device using the active `limit`,
 `offset`, and `order`, rather than silently returning to page 1.
 
@@ -182,8 +183,9 @@ provisioning/HMAC key returned once when a device is created and used by
   slicing, and returns the response envelope.
 - The frontend API client validates and returns the envelope.
 - `App` owns current offset/order and page-navigation orchestration.
-- Measurement-state helpers continue owning notification merging and gap
-  detection; they consume only the envelope's `results` for gap recovery.
+- Measurement-state helpers continue owning latest-notification and gap
+  detection; gap recovery consumes the envelope's `results` without inserting
+  them into the current page.
 
 No unrelated device provisioning, authentication, or NATS authorization changes
 are included.
