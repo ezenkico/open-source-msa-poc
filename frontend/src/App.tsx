@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
+  getCurrentUser,
   getLatest,
   getMeasurements,
   getNatsToken,
   listDevices,
   login,
+  type CreatedDevice,
+  type CurrentUser,
   type Device,
 } from "./api";
+import DeviceProvisioning from "./DeviceProvisioning";
 import { subscribeToDeviceCreations, subscribeToMeasurements } from "./nats";
 import {
   mergeNotification,
@@ -37,6 +41,7 @@ export default function App() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(true);
   const [devices, setDevices] = useState<Device[]>([]);
+  const [canAddDevices, setCanAddDevices] = useState(false);
   const [deviceId, setDeviceId] = useState("");
   const [measurementState, setMeasurementState] = useState<MeasurementState>(EMPTY_STATE);
   const [apiError, setApiError] = useState<string | null>(null);
@@ -54,6 +59,7 @@ export default function App() {
     selectedDeviceIdRef.current = "";
     setAccessToken(null);
     setDevices([]);
+    setCanAddDevices(false);
     setDeviceId("");
     setMeasurementState(EMPTY_STATE);
     setConnectionError(null);
@@ -111,9 +117,13 @@ export default function App() {
     }
 
     let disposed = false;
-    void listDevices(restoredToken).then((listedDevices) => {
+    void Promise.all([
+      listDevices(restoredToken),
+      getCurrentUser(restoredToken),
+    ]).then(([listedDevices, currentUser]: [Device[], CurrentUser]) => {
       if (!disposed) {
         setDevices(listedDevices);
+        setCanAddDevices(currentUser.can_add_devices);
         authenticationGeneration.current += 1;
         setAccessToken(restoredToken);
         selectedDeviceIdRef.current = "";
@@ -144,18 +154,50 @@ export default function App() {
     setApiError(null);
     try {
       const token = await login(username, password);
-      const listedDevices = await listDevices(token);
+      const [listedDevices, currentUser]: [Device[], CurrentUser] = await Promise.all([
+        listDevices(token),
+        getCurrentUser(token),
+      ]);
       storeAccessToken(token);
       authenticationGeneration.current += 1;
       setAccessToken(token);
       setDevices(listedDevices);
+      setCanAddDevices(currentUser.can_add_devices);
       selectedDeviceIdRef.current = "";
       setDeviceId("");
       setMeasurementState(EMPTY_STATE);
     } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        logout();
+        return;
+      }
       setApiError(error instanceof Error ? error.message : "Login failed");
     }
   }
+
+  const reloadCapabilityAfterPermissionDenied = useCallback(async (
+    token: string,
+    authGeneration: number,
+  ) => {
+    setCanAddDevices(false);
+    setApiError("Your device creation permission changed.");
+    try {
+      const currentUser = await getCurrentUser(token);
+      if (authenticationGeneration.current !== authGeneration) {
+        return;
+      }
+      setCanAddDevices(currentUser.can_add_devices);
+    } catch (error) {
+      if (authenticationGeneration.current !== authGeneration) {
+        return;
+      }
+      if (error instanceof ApiError && error.status === 401) {
+        logout();
+        return;
+      }
+      setApiError(error instanceof Error ? error.message : "Could not reload device creation permission");
+    }
+  }, [logout]);
 
   function selectDevice(selectedDeviceId: string) {
     selectionGeneration.current += 1;
@@ -350,6 +392,21 @@ export default function App() {
   }
 
   const { latest, rows } = measurementState;
+  const selectedDevice = devices.find((device) => device.id === deviceId);
+  const renderedAuthenticationGeneration = authenticationGeneration.current;
+
+  function refreshAfterCreation(_createdDevice: CreatedDevice) {
+    if (accessToken) {
+      void refreshDevices(accessToken, renderedAuthenticationGeneration);
+    }
+  }
+
+  function handlePermissionDenied() {
+    if (accessToken) {
+      void reloadCapabilityAfterPermissionDenied(accessToken, renderedAuthenticationGeneration);
+    }
+  }
+
   return (
     <main>
       <h1>IoT measurements</h1>
@@ -368,13 +425,25 @@ export default function App() {
       )}
 
       {accessToken && (
-        <label>
-          Selected device
-          <select value={deviceId} onChange={(event) => selectDevice(event.target.value)}>
-            <option value="">Choose a device</option>
-            {devices.map((device) => <option key={device.id} value={device.id}>{device.name}</option>)}
-          </select>
-        </label>
+        <>
+          <label>
+            Selected device
+            <select value={deviceId} onChange={(event) => selectDevice(event.target.value)}>
+              <option value="">Choose a device</option>
+              {devices.map((device) => (
+                <option key={device.id} value={device.id}>{device.name} — {device.id}</option>
+              ))}
+            </select>
+          </label>
+          {selectedDevice && <p><strong>Device ID:</strong> {selectedDevice.id}</p>}
+          <DeviceProvisioning
+            accessToken={accessToken}
+            canAddDevices={canAddDevices}
+            onCreated={refreshAfterCreation}
+            onAuthenticationLost={logout}
+            onPermissionDenied={handlePermissionDenied}
+          />
+        </>
       )}
 
       {apiError && <p role="alert">API error: {apiError}</p>}

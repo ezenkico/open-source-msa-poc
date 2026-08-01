@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App, { PAGE_SIZE } from "./App";
+import type { CreatedDevice } from "./api";
+import type { DeviceProvisioningProps } from "./DeviceProvisioning";
 import type { Measurement } from "./measurementState";
 
 const api = vi.hoisted(() => ({
@@ -13,10 +15,15 @@ const api = vi.hoisted(() => ({
     }
   },
   login: vi.fn(),
+  getCurrentUser: vi.fn(),
   getNatsToken: vi.fn(),
   listDevices: vi.fn(),
   getLatest: vi.fn(),
   getMeasurements: vi.fn(),
+}));
+
+const provisioning = vi.hoisted(() => ({
+  props: undefined as DeviceProvisioningProps | undefined,
 }));
 
 const nats = vi.hoisted(() => ({
@@ -31,6 +38,24 @@ const session = vi.hoisted(() => ({
 }));
 
 vi.mock("./api", () => api);
+vi.mock("./DeviceProvisioning", async () => {
+  const { useState } = await import("react");
+  return {
+    default: (props: DeviceProvisioningProps) => {
+      const [credentialsVisible, setCredentialsVisible] = useState(false);
+      provisioning.props = props;
+      if (!props.canAddDevices) {
+        return null;
+      }
+      return (
+        <section aria-label="Device provisioning mock">
+          <button type="button" onClick={() => setCredentialsVisible(true)}>Show credentials</button>
+          {credentialsVisible && <p>Credential panel state</p>}
+        </section>
+      );
+    },
+  };
+});
 vi.mock("./nats", () => nats);
 vi.mock("./session", () => session);
 
@@ -43,6 +68,7 @@ const DEVICE_ONE = {
 };
 const DEVICE_TWO = { ...DEVICE_ONE, id: "b2222222-2222-4222-8222-222222222222", name: "Pump" };
 const DEVICE_THREE = { ...DEVICE_ONE, id: "c3333333-3333-4333-8333-333333333333", name: "Chiller" };
+const CREATED_DEVICE: CreatedDevice = { ...DEVICE_THREE, key: "one-time-key" };
 
 function measurement(entry_index: number, device_id = DEVICE_ONE.id): Measurement {
   return {
@@ -65,12 +91,17 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
+function currentProvisioningProps(): DeviceProvisioningProps {
+  expect(provisioning.props).toBeDefined();
+  return provisioning.props!;
+}
+
 async function logIn() {
   fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "reader" } });
   fireEvent.change(screen.getByLabelText(/password/i), { target: { value: "password" } });
   fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
 
-  await screen.findByRole("option", { name: DEVICE_ONE.name });
+  await screen.findByRole("option", { name: /Boiler/ });
 }
 
 async function logInAndSelect(deviceId = DEVICE_ONE.id) {
@@ -88,10 +119,12 @@ describe("App", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    provisioning.props = undefined;
     close = vi.fn();
     closeDeviceCreations = vi.fn();
     session.restoreAccessToken.mockReturnValue(null);
     api.login.mockResolvedValue("access-token");
+    api.getCurrentUser.mockResolvedValue({ can_add_devices: true });
     api.getNatsToken.mockResolvedValue("nats-token");
     api.listDevices.mockResolvedValue([DEVICE_ONE, DEVICE_TWO]);
     api.getLatest.mockResolvedValue(measurement(2));
@@ -112,33 +145,111 @@ describe("App", () => {
     );
   });
 
-  it("restores a valid session only after its device list is validated", async () => {
+  it("restores a valid session only after devices and capability both load", async () => {
+    const listedDevices = deferred<typeof DEVICE_ONE[]>();
+    const currentUser = deferred<{ can_add_devices: boolean }>();
     session.restoreAccessToken.mockReturnValue("restored-token");
-    api.listDevices.mockResolvedValue([DEVICE_ONE]);
+    api.listDevices.mockReturnValue(listedDevices.promise);
+    api.getCurrentUser.mockReturnValue(currentUser.promise);
 
     render(<App />);
 
     expect(screen.queryByRole("button", { name: /sign in/i })).not.toBeInTheDocument();
-    expect(await screen.findByRole("option", { name: DEVICE_ONE.name })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(api.listDevices).toHaveBeenCalledWith("restored-token");
+      expect(api.getCurrentUser).toHaveBeenCalledWith("restored-token");
+    });
+    await act(async () => {
+      listedDevices.resolve([DEVICE_ONE]);
+      await listedDevices.promise;
+    });
+    expect(screen.queryByLabelText(/selected device/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/device provisioning mock/i)).not.toBeInTheDocument();
+
+    await act(async () => {
+      currentUser.resolve({ can_add_devices: true });
+      await currentUser.promise;
+    });
+
+    expect(await screen.findByRole("option", { name: /Boiler/ })).toBeInTheDocument();
+    expect(screen.getByLabelText(/device provisioning mock/i)).toBeInTheDocument();
     expect(api.listDevices).toHaveBeenCalledWith("restored-token");
   });
 
-  it("persists the access token after login and device listing succeed", async () => {
+  it("persists an interactive-login token only after devices and capability both load", async () => {
+    const listedDevices = deferred<typeof DEVICE_ONE[]>();
+    const currentUser = deferred<{ can_add_devices: boolean }>();
+    api.listDevices.mockReturnValue(listedDevices.promise);
+    api.getCurrentUser.mockReturnValue(currentUser.promise);
     render(<App />);
 
-    await logInAndSelect();
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "reader" } });
+    fireEvent.change(screen.getByLabelText(/password/i), { target: { value: "password" } });
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+    await waitFor(() => {
+      expect(api.listDevices).toHaveBeenCalledWith("access-token");
+      expect(api.getCurrentUser).toHaveBeenCalledWith("access-token");
+    });
+    await act(async () => {
+      listedDevices.resolve([DEVICE_ONE]);
+      await listedDevices.promise;
+    });
+    expect(session.storeAccessToken).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText(/selected device/i)).not.toBeInTheDocument();
 
+    await act(async () => {
+      currentUser.resolve({ can_add_devices: true });
+      await currentUser.promise;
+    });
+
+    expect(await screen.findByRole("option", { name: /Boiler/ })).toBeInTheDocument();
     expect(session.storeAccessToken).toHaveBeenCalledWith("access-token");
+    expect(provisioning.props).toMatchObject({ accessToken: "access-token", canAddDevices: true });
   });
 
-  it("clears a restored session rejected by the API", async () => {
+  it.each(["devices", "capability"] as const)("clears a restored session when %s returns 401", async (request) => {
     session.restoreAccessToken.mockReturnValue("rejected-token");
-    api.listDevices.mockRejectedValue(new api.ApiError(401));
+    if (request === "devices") {
+      api.listDevices.mockRejectedValue(new api.ApiError(401));
+    } else {
+      api.getCurrentUser.mockRejectedValue(new api.ApiError(401));
+    }
 
     render(<App />);
 
     expect(await screen.findByRole("button", { name: /sign in/i })).toBeInTheDocument();
     expect(session.clearAccessToken).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText(/selected device/i)).not.toBeInTheDocument();
+  });
+
+  it.each(["devices", "capability"] as const)("clears an interactive session when %s returns 401", async (request) => {
+    if (request === "devices") {
+      api.listDevices.mockRejectedValue(new api.ApiError(401));
+    } else {
+      api.getCurrentUser.mockRejectedValue(new api.ApiError(401));
+    }
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "reader" } });
+    fireEvent.change(screen.getByLabelText(/password/i), { target: { value: "password" } });
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    await waitFor(() => expect(session.clearAccessToken).toHaveBeenCalledOnce());
+    expect(screen.getByRole("button", { name: /sign in/i })).toBeInTheDocument();
+    expect(session.storeAccessToken).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText(/selected device/i)).not.toBeInTheDocument();
+  });
+
+  it("does not commit an interactive-login token when capability loading fails transiently", async () => {
+    api.getCurrentUser.mockRejectedValue(new Error("Capability service unavailable"));
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "reader" } });
+    fireEvent.change(screen.getByLabelText(/password/i), { target: { value: "password" } });
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("API error: Capability service unavailable");
+    expect(session.storeAccessToken).not.toHaveBeenCalled();
     expect(screen.queryByLabelText(/selected device/i)).not.toBeInTheDocument();
   });
 
@@ -149,6 +260,191 @@ describe("App", () => {
 
     expect(await screen.findByRole("button", { name: /sign in/i })).toBeInTheDocument();
     expect(api.listDevices).not.toHaveBeenCalled();
+    expect(api.getCurrentUser).not.toHaveBeenCalled();
+  });
+
+  it("passes the authenticated token and capability to device provisioning", async () => {
+    render(<App />);
+
+    await logIn();
+
+    expect(provisioning.props).toMatchObject({
+      accessToken: "access-token",
+      canAddDevices: true,
+      onAuthenticationLost: expect.any(Function),
+      onCreated: expect.any(Function),
+      onPermissionDenied: expect.any(Function),
+    });
+    expect(screen.getByLabelText(/device provisioning mock/i)).toBeInTheDocument();
+  });
+
+  it("refreshes after provisioning without appending or changing the current selection", async () => {
+    const refreshedDevices = deferred<typeof DEVICE_ONE[]>();
+    render(<App />);
+    await logInAndSelect();
+    await waitFor(() => expect(api.listDevices).toHaveBeenCalledTimes(2));
+    api.listDevices.mockClear();
+    api.listDevices.mockReturnValue(refreshedDevices.promise);
+    const props = currentProvisioningProps();
+
+    act(() => props.onCreated(CREATED_DEVICE));
+
+    expect(api.listDevices).toHaveBeenCalledOnce();
+    expect(api.listDevices).toHaveBeenCalledWith("access-token");
+    expect(screen.queryByRole("option", { name: /Chiller/ })).not.toBeInTheDocument();
+    await act(async () => {
+      refreshedDevices.resolve([DEVICE_ONE, DEVICE_TWO]);
+      await refreshedDevices.promise;
+    });
+    expect(screen.queryByRole("option", { name: /Chiller/ })).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/selected device/i)).toHaveValue(DEVICE_ONE.id);
+  });
+
+  it("keeps provisioning credential state mounted when the post-create refresh fails", async () => {
+    render(<App />);
+    await logIn();
+    await waitFor(() => expect(api.listDevices).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: /show credentials/i }));
+    expect(screen.getByText("Credential panel state")).toBeInTheDocument();
+    api.listDevices.mockClear();
+    api.listDevices.mockRejectedValue(new Error("Could not refresh the device list"));
+    const props = currentProvisioningProps();
+
+    act(() => props.onCreated(CREATED_DEVICE));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("API error: Could not refresh the device list");
+    expect(screen.getByText("Credential panel state")).toBeInTheDocument();
+    expect(screen.getByLabelText(/device provisioning mock/i)).toBeInTheDocument();
+  });
+
+  it("logs out when device provisioning reports authentication loss", async () => {
+    render(<App />);
+    await logIn();
+    const props = currentProvisioningProps();
+
+    act(() => props.onAuthenticationLost());
+
+    expect(await screen.findByRole("button", { name: /sign in/i })).toBeInTheDocument();
+    expect(session.clearAccessToken).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText(/selected device/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/device provisioning mock/i)).not.toBeInTheDocument();
+  });
+
+  it("hides provisioning immediately and reloads capability after permission denial", async () => {
+    const currentUser = deferred<{ can_add_devices: boolean }>();
+    render(<App />);
+    await logIn();
+    api.getCurrentUser.mockClear();
+    api.getCurrentUser.mockReturnValue(currentUser.promise);
+    const props = currentProvisioningProps();
+
+    act(() => props.onPermissionDenied());
+
+    expect(provisioning.props?.canAddDevices).toBe(false);
+    expect(screen.queryByLabelText(/device provisioning mock/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Your device creation permission changed.");
+    expect(api.getCurrentUser).toHaveBeenCalledOnce();
+    expect(api.getCurrentUser).toHaveBeenCalledWith("access-token");
+    await act(async () => {
+      currentUser.resolve({ can_add_devices: false });
+      await currentUser.promise;
+    });
+    expect(provisioning.props?.canAddDevices).toBe(false);
+  });
+
+  it("uses the authoritative capability returned after permission denial", async () => {
+    const currentUser = deferred<{ can_add_devices: boolean }>();
+    render(<App />);
+    await logIn();
+    api.getCurrentUser.mockReturnValue(currentUser.promise);
+    const props = currentProvisioningProps();
+
+    act(() => props.onPermissionDenied());
+    expect(screen.queryByLabelText(/device provisioning mock/i)).not.toBeInTheDocument();
+    await act(async () => {
+      currentUser.resolve({ can_add_devices: true });
+      await currentUser.promise;
+    });
+
+    expect(provisioning.props?.canAddDevices).toBe(true);
+    expect(screen.getByLabelText(/device provisioning mock/i)).toBeInTheDocument();
+  });
+
+  it("logs out when the capability reload after permission denial returns 401", async () => {
+    render(<App />);
+    await logIn();
+    api.getCurrentUser.mockRejectedValue(new api.ApiError(401));
+    const props = currentProvisioningProps();
+
+    act(() => props.onPermissionDenied());
+
+    expect(await screen.findByRole("button", { name: /sign in/i })).toBeInTheDocument();
+    expect(session.clearAccessToken).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText(/selected device/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps provisioning hidden when the capability reload fails transiently", async () => {
+    render(<App />);
+    await logIn();
+    api.getCurrentUser.mockRejectedValue(new Error("Could not reload capability"));
+    const props = currentProvisioningProps();
+
+    act(() => props.onPermissionDenied());
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("API error: Could not reload capability");
+    expect(provisioning.props?.canAddDevices).toBe(false);
+    expect(screen.queryByLabelText(/device provisioning mock/i)).not.toBeInTheDocument();
+  });
+
+  it("ignores a stale capability reload from an earlier authentication session", async () => {
+    const staleCurrentUser = deferred<{ can_add_devices: boolean }>();
+    api.login.mockResolvedValueOnce("first-token").mockResolvedValueOnce("second-token");
+    render(<App />);
+    await logIn();
+    api.getCurrentUser
+      .mockReturnValueOnce(staleCurrentUser.promise)
+      .mockResolvedValueOnce({ can_add_devices: false });
+    const firstSessionCallbacks = currentProvisioningProps();
+
+    act(() => firstSessionCallbacks.onPermissionDenied());
+    act(() => firstSessionCallbacks.onAuthenticationLost());
+    await logIn();
+    expect(provisioning.props).toMatchObject({ accessToken: "second-token", canAddDevices: false });
+
+    await act(async () => {
+      staleCurrentUser.resolve({ can_add_devices: true });
+      await staleCurrentUser.promise;
+    });
+
+    expect(provisioning.props).toMatchObject({ accessToken: "second-token", canAddDevices: false });
+    expect(screen.getByLabelText(/selected device/i)).toBeInTheDocument();
+  });
+
+  it("shows each device name together with its UUID in the selector", async () => {
+    render(<App />);
+
+    await logIn();
+
+    expect(screen.getByRole("option", {
+      name: "Boiler — a1111111-1111-4111-8111-111111111111",
+    })).toBeInTheDocument();
+  });
+
+  it("shows the selected device UUID as visible labeled text", async () => {
+    render(<App />);
+
+    await logInAndSelect();
+
+    const label = screen.getByText("Device ID:", { selector: "strong" });
+    expect(label.parentElement).toHaveTextContent("Device ID: a1111111-1111-4111-8111-111111111111");
+  });
+
+  it("does not show selected-device ID text while the placeholder is selected", async () => {
+    render(<App />);
+    await logInAndSelect();
+    fireEvent.change(screen.getByLabelText(/selected device/i), { target: { value: "" } });
+
+    expect(screen.queryByText("Device ID:", { selector: "strong" })).not.toBeInTheDocument();
   });
 
   it("starts one global device-creation subscription after authentication", async () => {
@@ -174,12 +470,12 @@ describe("App", () => {
     render(<App />);
 
     await logIn();
-    expect(screen.queryByRole("option", { name: DEVICE_THREE.name })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Chiller/ })).not.toBeInTheDocument();
     await waitFor(() => expect(nats.subscribeToDeviceCreations).toHaveBeenCalledOnce());
 
     subscriptionReady.resolve(closeDeviceCreations);
 
-    expect(await screen.findByRole("option", { name: DEVICE_THREE.name })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: /Chiller/ })).toBeInTheDocument();
     expect(api.listDevices).toHaveBeenNthCalledWith(2, "access-token");
   });
 
@@ -192,7 +488,7 @@ describe("App", () => {
 
     act(() => deviceCreated());
 
-    expect(await screen.findByRole("option", { name: DEVICE_THREE.name })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: /Chiller/ })).toBeInTheDocument();
     expect(api.listDevices).toHaveBeenCalledOnce();
     expect(api.listDevices).toHaveBeenCalledWith("access-token");
   });
@@ -206,7 +502,7 @@ describe("App", () => {
 
     act(() => deviceReconnect());
 
-    expect(await screen.findByRole("option", { name: DEVICE_THREE.name })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: /Chiller/ })).toBeInTheDocument();
     expect(api.listDevices).toHaveBeenCalledOnce();
     expect(api.listDevices).toHaveBeenCalledWith("access-token");
   });
@@ -219,7 +515,7 @@ describe("App", () => {
 
     act(() => deviceCreated());
 
-    await screen.findByRole("option", { name: DEVICE_THREE.name });
+    await screen.findByRole("option", { name: /Chiller/ });
     expect(screen.getByLabelText(/selected device/i)).toHaveValue(DEVICE_ONE.id);
   });
 
@@ -239,14 +535,14 @@ describe("App", () => {
       newer.resolve([DEVICE_ONE, DEVICE_THREE]);
       await newer.promise;
     });
-    expect(await screen.findByRole("option", { name: DEVICE_THREE.name })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: /Chiller/ })).toBeInTheDocument();
 
     await act(async () => {
       older.resolve([DEVICE_TWO]);
       await older.promise;
     });
-    expect(screen.getByRole("option", { name: DEVICE_THREE.name })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: DEVICE_TWO.name })).not.toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Chiller/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Pump/ })).not.toBeInTheDocument();
   });
 
   it.each([401, 403])("logs out when an older overlapping refresh returns %i", async (status) => {
@@ -265,7 +561,7 @@ describe("App", () => {
       newer.resolve([DEVICE_ONE, DEVICE_THREE]);
       await newer.promise;
     });
-    expect(await screen.findByRole("option", { name: DEVICE_THREE.name })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: /Chiller/ })).toBeInTheDocument();
 
     await act(async () => {
       older.reject(new api.ApiError(status));
