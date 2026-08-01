@@ -163,8 +163,7 @@ explicit per-device key keeps it distinct from Django's server key:
   --value 21.7
 ```
 
-`--device-id` and `--key` remain available as overrides, but storing provisioned
-values in `.env` avoids exposing real credentials in shell history.
+`DEVICE_ID` may remain in `.env`. The hidden prompt keeps the per-device key out of shell history and the shared `.env`.
 The simulator signs the exact JSON body with HMAC-SHA256 and communicates only
 over HTTP.
 
