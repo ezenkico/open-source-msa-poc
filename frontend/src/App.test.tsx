@@ -260,6 +260,36 @@ describe("App", () => {
     );
   });
 
+  it("does not mark a manual page current while measurement transport is connecting", async () => {
+    const measurementToken = deferred<string>();
+    render(<App />);
+    await logIn();
+    await waitFor(() => expect(nats.subscribeToDeviceCreations).toHaveBeenCalledOnce());
+    api.getNatsToken.mockReturnValueOnce(measurementToken.promise);
+
+    fireEvent.change(screen.getByLabelText("Selected device"), { target: { value: DEVICE_ONE.id } });
+    expect(screen.getByLabelText("Device connection status")).toHaveTextContent("Connecting");
+    api.getMeasurements.mockResolvedValueOnce(measurementPage(
+      [measurement(3), measurement(2), measurement(1)],
+      { total: 3, order: "asc" },
+    ));
+
+    fireEvent.change(screen.getByLabelText("Measurement order"), { target: { value: "asc" } });
+
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=0&order=asc`,
+    ));
+    expect(screen.getByText("3 measurements")).toBeInTheDocument();
+    expect(screen.getAllByRole("row")).toHaveLength(4);
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("3");
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "History may be out of date",
+    );
+    expect(screen.queryByText("History up to date")).not.toBeInTheDocument();
+  });
+
   it("keeps measurement history controls in a named region", async () => {
     render(<App />);
     await logInAndSelect();
@@ -1220,6 +1250,64 @@ describe("App", () => {
       );
     });
 
+    it("keeps a newer notification scheduled when an in-flight manual page later succeeds", async () => {
+      const manualPage = deferred<MeasurementPage>();
+      const firstPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
+      const secondPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(70 - index));
+      const refreshedRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(69 - index));
+      api.getLatest.mockResolvedValue(measurement(120));
+      api.getMeasurements.mockResolvedValueOnce(measurementPage(firstPageRows, { total: 120 }));
+      render(<App />);
+      await logInAndSelect();
+      await screen.findByText("Page 1 of 3");
+      api.getLatest.mockClear();
+      api.getMeasurements.mockClear();
+      api.getLatest.mockResolvedValueOnce(measurement(121));
+      api.getMeasurements
+        .mockReturnValueOnce(manualPage.promise)
+        .mockResolvedValueOnce(measurementPage(refreshedRows, { total: 120, offset: PAGE_SIZE }));
+      vi.useFakeTimers();
+
+      fireEvent.click(screen.getByRole("button", { name: /^next$/i }));
+      expect(api.getMeasurements).toHaveBeenCalledWith(
+        DEVICE_ONE.id,
+        "access-token",
+        `limit=${PAGE_SIZE}&offset=${PAGE_SIZE}&order=desc`,
+      );
+      expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+        "Refreshing history",
+      );
+
+      act(() => notification(measurement(121)));
+      expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+        "Refresh scheduled",
+      );
+      await act(async () => {
+        manualPage.resolve(measurementPage(secondPageRows, { total: 120, offset: PAGE_SIZE }));
+        await manualPage.promise;
+      });
+
+      expect(screen.getByText("Page 2 of 3")).toBeInTheDocument();
+      expect(screen.getAllByRole("row")[1]).toHaveTextContent("70");
+      expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+        "Refresh scheduled",
+      );
+
+      await advanceTimersByTime(250);
+
+      expect(api.getMeasurements).toHaveBeenCalledTimes(2);
+      expect(api.getMeasurements).toHaveBeenNthCalledWith(
+        2,
+        DEVICE_ONE.id,
+        "access-token",
+        `limit=${PAGE_SIZE}&offset=${PAGE_SIZE}&order=desc`,
+      );
+      expect(screen.getAllByRole("row")[1]).toHaveTextContent("69");
+      expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+        "History up to date",
+      );
+    });
+
     it("coalesces three notifications inside 250 ms into one additional refresh", async () => {
       render(<App />);
       await logInAndSelect();
@@ -1804,6 +1892,77 @@ describe("App", () => {
       `after_index=50&through_index=58&limit=${PAGE_SIZE}`,
     ));
   });
+
+  it.each([
+    ["latest", "Initial latest unavailable"],
+    ["page", "Initial history unavailable"],
+  ] as const)(
+    "activates queued and later notifications when the initial %s read fails",
+    async (failedRead, expectedError) => {
+      const initialLatest = deferred<Measurement | null>();
+      const initialRows = deferred<MeasurementPage>();
+      api.getLatest.mockReturnValue(initialLatest.promise);
+      api.getMeasurements.mockReturnValue(initialRows.promise);
+      render(<App />);
+      await logInAndSelect();
+      await waitFor(() => expect(nats.subscribeToMeasurements).toHaveBeenCalledOnce());
+      await waitFor(() => {
+        expect(api.getLatest).toHaveBeenCalledOnce();
+        expect(api.getMeasurements).toHaveBeenCalledOnce();
+      });
+      api.getLatest.mockClear();
+      api.getMeasurements.mockClear();
+      vi.useFakeTimers();
+
+      try {
+        act(() => notification(measurement(3)));
+        await act(async () => {
+          if (failedRead === "latest") {
+            initialLatest.reject(new Error(expectedError));
+            initialRows.resolve(measurementPage([measurement(2), measurement(1)], { total: 2 }));
+          } else {
+            initialLatest.resolve(measurement(2));
+            initialRows.reject(new Error(expectedError));
+          }
+          await Promise.allSettled([initialLatest.promise, initialRows.promise]);
+        });
+
+        expect(api.getLatest).not.toHaveBeenCalled();
+        expect(api.getMeasurements).not.toHaveBeenCalled();
+        expect(screen.getByLabelText("Device connection status")).toHaveTextContent("Streaming");
+        expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("3");
+        expect(screen.getByRole("status", { name: "Measurement history status" })).not.toHaveTextContent(
+          "History up to date",
+        );
+
+        act(() => notification(measurement(4)));
+        expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("4");
+        api.getLatest.mockResolvedValueOnce(measurement(4));
+        api.getMeasurements.mockResolvedValueOnce(measurementPage(
+          [measurement(4), measurement(3), measurement(2), measurement(1)],
+          { total: 4 },
+        ));
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(250);
+        });
+
+        expect(api.getLatest).toHaveBeenCalledWith(DEVICE_ONE.id, "access-token");
+        expect(api.getMeasurements).toHaveBeenCalledWith(
+          DEVICE_ONE.id,
+          "access-token",
+          `limit=${PAGE_SIZE}&offset=0&order=desc`,
+        );
+        expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+          "History up to date",
+        );
+        expect(screen.getByText("4 measurements")).toBeInTheDocument();
+        expect(screen.getAllByRole("row")).toHaveLength(5);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("does not miss a notification while the initial authoritative read is pending", async () => {
     const initialLatest = deferred<Measurement | null>();

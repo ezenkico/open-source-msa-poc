@@ -132,6 +132,7 @@ export default function App() {
     commitResult = true,
   ): Promise<MeasurementPage | null> => {
     pageLoadGeneration.current += 1;
+    const notificationGeneration = measurementNotificationGeneration.current;
 
     async function requestPage(targetOffset: number, correctionAttempted: boolean): Promise<MeasurementPage | null> {
       const requestGeneration = ++pageRequestGeneration.current;
@@ -179,7 +180,15 @@ export default function App() {
             ...current,
             rows: committedPage.results,
           }));
-          setHistoryFreshness(measurementConnectionRef.current === "error" ? "stale" : "current");
+          setHistoryFreshness((currentFreshness) => {
+            if (
+              measurementConnectionRef.current === "live"
+              && measurementNotificationGeneration.current === notificationGeneration
+            ) {
+              return "current";
+            }
+            return currentFreshness === "scheduled" ? "scheduled" : "stale";
+          });
           setApiError(null);
         }
         return committedPage;
@@ -275,7 +284,7 @@ export default function App() {
           : latestResult.latest,
         rows: page.results,
       }));
-      setHistoryFreshness(measurementConnectionRef.current === "error" ? "stale" : "current");
+      setHistoryFreshness(measurementConnectionRef.current === "live" ? "current" : "stale");
       setApiError(null);
     });
   }, [accessToken, loadMeasurementPage]);
@@ -618,7 +627,7 @@ export default function App() {
         setMeasurementConnectionError(null);
         const initialOffset = offsetRef.current;
         const initialOrder = orderRef.current;
-        const [latest] = await Promise.all([
+        const [latestResult, pageResult] = await Promise.allSettled([
           getLatest(deviceId, token),
           loadMeasurementPage(deviceId, token, initialOffset, initialOrder, generation),
         ]);
@@ -630,9 +639,27 @@ export default function App() {
         initialStateLoaded = true;
         setMeasurementState((current) => queuedNotifications.reduce<MeasurementState>(
           (state, notification) => mergeNotification(state, notification),
-          { ...current, latest },
+          {
+            ...current,
+            latest: latestResult.status === "fulfilled" ? latestResult.value : current.latest,
+          },
         ));
         setIsInitialMeasurementLoading(false);
+        if (latestResult.status === "rejected") {
+          setApiError(
+            latestResult.reason instanceof Error
+              ? latestResult.reason.message
+              : "Could not load measurements",
+          );
+        }
+        if (pageResult.status === "rejected") {
+          setHistoryFreshness("stale");
+          setApiError(
+            pageResult.reason instanceof Error
+              ? pageResult.reason.message
+              : "Could not load measurements",
+          );
+        }
         if (queuedNotifications.length > 0) {
           measurementNotificationGeneration.current += queuedNotifications.length;
           setHistoryFreshness("scheduled");
