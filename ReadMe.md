@@ -49,12 +49,15 @@ Create the local environment file:
 cp example.env .env
 ```
 
-Replace every placeholder. Generate the 32-byte AES device-key encryption
-key, for example, with:
+Replace every placeholder. Generate the encryption key with:
 
 ```sh
-openssl rand -base64 32
+python3 generate-encryption-key.py
 ```
+
+Copy the base64 output into `DEVICE_KEY_ENCRYPTION_KEY` in `.env`. This is the
+server-side 32-byte AES-256 key-encryption key used to protect provisioned
+device keys at rest, so it must remain secret.
 
 Generate an NATS account signer pair:
 
@@ -115,8 +118,8 @@ curl --fail --silent --show-error \
   http://localhost/api/devices/
 ```
 
-The create response returns the device UUID and plaintext key exactly once.
-Store the key securely. Django stores only an AES-256-GCM-encrypted form.
+The plaintext `DEVICE_KEY` is returned once per provisioned device. Store the
+key securely. Django stores only an AES-256-GCM-encrypted form.
 Key rotation is available with:
 
 ```sh
@@ -136,8 +139,10 @@ python3 -m venv .venv
 .venv/bin/pip install requests
 ```
 
-Put the device ID and one-time key returned during provisioning in `.env` as
-`DEVICE_ID` and `DEVICE_KEY`. Then run:
+Put the device ID and one-time `DEVICE_KEY` returned during provisioning in
+`.env` as `DEVICE_ID` and `DEVICE_KEY_ENCRYPTION_KEY`, respectively. The
+simulator currently reads that environment variable as its default signing-key
+input; `--key` remains available as an override. Then run:
 
 ```sh
 .venv/bin/python iot-device-sim.py \
@@ -146,8 +151,8 @@ Put the device ID and one-time key returned during provisioning in `.env` as
   --value 21.7
 ```
 
-`--device-id` and `--key` remain available as overrides, but storing
-provisioned values in `.env` avoids exposing real credentials in shell history.
+`--device-id` and `--key` remain available as overrides, but storing provisioned
+values in `.env` avoids exposing real credentials in shell history.
 The simulator signs the exact JSON body with HMAC-SHA256 and communicates only
 over HTTP.
 
