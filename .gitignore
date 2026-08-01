@@ -2,5 +2,5 @@ __pycache__
 .env
 .venv/
 .worktrees/
-/postgres-data/
+./postgres-data
 nats-keys

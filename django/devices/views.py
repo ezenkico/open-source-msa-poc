@@ -126,6 +126,7 @@ class AuthenticatedMeasurementView(APIView):
 
 class LatestMeasurementView(AuthenticatedMeasurementView):
     def get(self, request, device_id):
+        print(device_id)
         get_object_or_404(Device, id=device_id)
         measurement = (
             Measurement.objects.filter(device_id=device_id)
