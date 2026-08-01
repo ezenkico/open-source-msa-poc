@@ -1,5 +1,15 @@
 import type { Measurement } from "./measurementState";
 
+export type MeasurementOrder = "asc" | "desc";
+
+export type MeasurementPage = {
+  results: Measurement[];
+  total: number;
+  limit: number;
+  offset: number;
+  order: MeasurementOrder;
+};
+
 export type Device = {
   id: string;
   name: string;
@@ -89,6 +99,76 @@ function parseCreatedDevice(value: unknown): CreatedDevice {
   return { ...device, key };
 }
 
+function isSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value);
+}
+
+function parseMeasurement(value: unknown): Measurement {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Measurement response included an invalid measurement");
+  }
+
+  const measurement = value as Record<keyof Measurement, unknown>;
+  if (typeof measurement.device_id !== "string") {
+    throw new Error("Measurement response included an invalid device_id");
+  }
+  if (!isSafeInteger(measurement.entry_index) || measurement.entry_index < 0) {
+    throw new Error("Measurement response included an invalid entry_index");
+  }
+  if (typeof measurement.measurement_name !== "string") {
+    throw new Error("Measurement response included an invalid measurement_name");
+  }
+  if (typeof measurement.value !== "number" || !Number.isFinite(measurement.value)) {
+    throw new Error("Measurement response included an invalid value");
+  }
+  if (typeof measurement.measured_at !== "string") {
+    throw new Error("Measurement response included an invalid measured_at");
+  }
+  if (typeof measurement.received_at !== "string") {
+    throw new Error("Measurement response included an invalid received_at");
+  }
+
+  return {
+    device_id: measurement.device_id,
+    entry_index: measurement.entry_index,
+    measurement_name: measurement.measurement_name,
+    value: measurement.value,
+    measured_at: measurement.measured_at,
+    received_at: measurement.received_at,
+  };
+}
+
+function parseMeasurementPage(value: unknown): MeasurementPage {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Measurement response did not include a valid page");
+  }
+
+  const page = value as Record<keyof MeasurementPage, unknown>;
+  if (!Array.isArray(page.results)) {
+    throw new Error("Measurement response did not include an array of results");
+  }
+  if (!isSafeInteger(page.total) || page.total < 0) {
+    throw new Error("Measurement response included an invalid total");
+  }
+  if (!isSafeInteger(page.limit) || page.limit < 1) {
+    throw new Error("Measurement response included an invalid limit");
+  }
+  if (!isSafeInteger(page.offset) || page.offset < 0) {
+    throw new Error("Measurement response included an invalid offset");
+  }
+  if (page.order !== "asc" && page.order !== "desc") {
+    throw new Error("Measurement response included an invalid order");
+  }
+
+  return {
+    results: page.results.map(parseMeasurement),
+    total: page.total,
+    limit: page.limit,
+    offset: page.offset,
+    order: page.order,
+  };
+}
+
 export async function login(username: string, password: string): Promise<string> {
   const response = await request("/api/auth/jwt/", {
     method: "POST",
@@ -146,9 +226,9 @@ export async function getMeasurements(
   deviceId: string,
   accessToken: string,
   query: string,
-): Promise<Measurement[]> {
+): Promise<MeasurementPage> {
   const response = await request(`/api/devices/${deviceId}/measurements/?${query}`, {
     headers: bearer(accessToken),
   });
-  return response.json() as Promise<Measurement[]>;
+  return parseMeasurementPage(await response.json());
 }

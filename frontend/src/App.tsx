@@ -128,11 +128,11 @@ export default function App() {
   }, [logout]);
 
   const loadAuthoritativeState = useCallback(async (selectedDeviceId: string, token: string) => {
-    const [latest, rows] = await Promise.all([
+    const [latest, page] = await Promise.all([
       getLatest(selectedDeviceId, token),
       getMeasurements(selectedDeviceId, token, `limit=${PAGE_SIZE}`),
     ]);
-    return { latest, rows, missingRange: null };
+    return { latest, rows: page.results, missingRange: null };
   }, []);
 
   useEffect(() => {
@@ -402,11 +402,11 @@ export default function App() {
       deviceId,
       accessToken,
       `after_index=${range.afterIndex}&through_index=${range.throughIndex}&limit=${PAGE_SIZE}`,
-    ).then((rows) => {
+    ).then((page) => {
       if (isCurrent()) {
         setMeasurementState((current) => ({
           ...current,
-          rows: appendUniqueRows(current.rows, rows),
+          rows: appendUniqueRows(current.rows, page.results),
           missingRange: null,
         }));
       }
@@ -428,11 +428,11 @@ export default function App() {
     const generation = selectionGeneration.current;
     setApiError(null);
     try {
-      const rows = await getMeasurements(deviceId, accessToken, `before_index=${firstIndex}&limit=${PAGE_SIZE}`);
+      const page = await getMeasurements(deviceId, accessToken, `before_index=${firstIndex}&limit=${PAGE_SIZE}`);
       if (selectionGeneration.current !== generation) {
         return;
       }
-      setMeasurementState((current) => ({ ...current, rows, missingRange: null }));
+      setMeasurementState((current) => ({ ...current, rows: page.results, missingRange: null }));
     } catch (error) {
       if (selectionGeneration.current === generation) {
         setApiError(error instanceof Error ? error.message : "Could not load the previous page");

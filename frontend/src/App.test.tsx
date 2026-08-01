@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App, { PAGE_SIZE } from "./App";
-import type { CreatedDevice } from "./api";
+import type { CreatedDevice, MeasurementOrder, MeasurementPage } from "./api";
 import type { DeviceProvisioningProps } from "./DeviceProvisioning";
 import type { Measurement } from "./measurementState";
 
@@ -81,6 +81,19 @@ function measurement(entry_index: number, device_id = DEVICE_ONE.id): Measuremen
   };
 }
 
+function measurementPage(
+  results: Measurement[],
+  metadata: Partial<Omit<MeasurementPage, "results">> = {},
+): MeasurementPage {
+  return {
+    results,
+    total: metadata.total ?? results.length,
+    limit: metadata.limit ?? PAGE_SIZE,
+    offset: metadata.offset ?? 0,
+    order: metadata.order ?? ("desc" satisfies MeasurementOrder),
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -131,7 +144,7 @@ describe("App", () => {
     api.getNatsToken.mockResolvedValue("nats-token");
     api.listDevices.mockResolvedValue([DEVICE_ONE, DEVICE_TWO]);
     api.getLatest.mockResolvedValue(measurement(2));
-    api.getMeasurements.mockResolvedValue([measurement(1), measurement(2)]);
+    api.getMeasurements.mockResolvedValue(measurementPage([measurement(1), measurement(2)]));
     nats.subscribeToMeasurements.mockImplementation(
       async (_deviceId, _token, onNotification, onReconnect) => {
         notification = onNotification;
@@ -732,7 +745,9 @@ describe("App", () => {
   });
 
   it("updates latest but leaves a full table unchanged", async () => {
-    api.getMeasurements.mockResolvedValue(Array.from({ length: PAGE_SIZE }, (_, index) => measurement(index + 1)));
+    api.getMeasurements.mockResolvedValue(measurementPage(
+      Array.from({ length: PAGE_SIZE }, (_, index) => measurement(index + 1)),
+    ));
     api.getLatest.mockResolvedValue(measurement(PAGE_SIZE));
     render(<App />);
     await logInAndSelect();
@@ -764,7 +779,7 @@ describe("App", () => {
 
   it("does not miss a notification while the initial authoritative read is pending", async () => {
     const initialLatest = deferred<Measurement | null>();
-    const initialRows = deferred<Measurement[]>();
+    const initialRows = deferred<MeasurementPage>();
     api.getLatest.mockReturnValue(initialLatest.promise);
     api.getMeasurements.mockReturnValue(initialRows.promise);
     render(<App />);
@@ -774,7 +789,7 @@ describe("App", () => {
     act(() => notification(measurement(3)));
     await act(async () => {
       initialLatest.resolve(measurement(2));
-      initialRows.resolve([measurement(1), measurement(2)]);
+      initialRows.resolve(measurementPage([measurement(1), measurement(2)]));
       await Promise.all([initialLatest.promise, initialRows.promise]);
     });
 
@@ -808,8 +823,8 @@ describe("App", () => {
 
   it("loads the previous page using the first displayed index", async () => {
     api.getLatest.mockResolvedValue(measurement(4));
-    api.getMeasurements.mockImplementation(async (_deviceId, _token, query) => (
-      query.startsWith("before_index") ? [measurement(1), measurement(2)] : [measurement(3), measurement(4)]
+    api.getMeasurements.mockImplementation(async (_deviceId, _token, query) => measurementPage(
+      query.startsWith("before_index") ? [measurement(1), measurement(2)] : [measurement(3), measurement(4)],
     ));
     render(<App />);
     await logInAndSelect();
@@ -827,12 +842,14 @@ describe("App", () => {
 
   it("does not commit a stale initial A response after selecting B", async () => {
     const staleLatest = deferred<Measurement | null>();
-    const staleRows = deferred<Measurement[]>();
+    const staleRows = deferred<MeasurementPage>();
     api.getLatest.mockImplementation((deviceId: string) => (
       deviceId === DEVICE_ONE.id ? staleLatest.promise : Promise.resolve(measurement(20, DEVICE_TWO.id))
     ));
     api.getMeasurements.mockImplementation((deviceId: string) => (
-      deviceId === DEVICE_ONE.id ? staleRows.promise : Promise.resolve([measurement(20, DEVICE_TWO.id)])
+      deviceId === DEVICE_ONE.id
+        ? staleRows.promise
+        : Promise.resolve(measurementPage([measurement(20, DEVICE_TWO.id)]))
     ));
     render(<App />);
     await logInAndSelect();
@@ -843,7 +860,7 @@ describe("App", () => {
 
     await act(async () => {
       staleLatest.resolve(measurement(2));
-      staleRows.resolve([measurement(1), measurement(2)]);
+      staleRows.resolve(measurementPage([measurement(1), measurement(2)]));
       await Promise.all([staleLatest.promise, staleRows.promise]);
     });
 
@@ -852,7 +869,7 @@ describe("App", () => {
   });
 
   it("does not append a stale A gap response after selecting B", async () => {
-    const staleGap = deferred<Measurement[]>();
+    const staleGap = deferred<MeasurementPage>();
     api.getLatest.mockImplementation((deviceId: string) => Promise.resolve(
       deviceId === DEVICE_ONE.id ? measurement(2) : measurement(20, DEVICE_TWO.id),
     ));
@@ -860,9 +877,9 @@ describe("App", () => {
       if (deviceId === DEVICE_ONE.id && query.startsWith("after_index")) {
         return staleGap.promise;
       }
-      return Promise.resolve(deviceId === DEVICE_ONE.id
+      return Promise.resolve(measurementPage(deviceId === DEVICE_ONE.id
         ? [measurement(1), measurement(2)]
-        : [measurement(20, DEVICE_TWO.id)]);
+        : [measurement(20, DEVICE_TWO.id)]));
     });
     render(<App />);
     await logInAndSelect();
@@ -878,7 +895,10 @@ describe("App", () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("20"));
 
     await act(async () => {
-      staleGap.resolve([measurement(3), measurement(4), measurement(5)]);
+      staleGap.resolve(measurementPage(
+        [measurement(3), measurement(4), measurement(5)],
+        { order: "asc" },
+      ));
       await staleGap.promise;
     });
 
@@ -886,7 +906,7 @@ describe("App", () => {
   });
 
   it("does not replace B with a stale A previous page", async () => {
-    const stalePage = deferred<Measurement[]>();
+    const stalePage = deferred<MeasurementPage>();
     api.getLatest.mockImplementation((deviceId: string) => Promise.resolve(
       deviceId === DEVICE_ONE.id ? measurement(5) : measurement(20, DEVICE_TWO.id),
     ));
@@ -894,9 +914,9 @@ describe("App", () => {
       if (deviceId === DEVICE_ONE.id && query.startsWith("before_index")) {
         return stalePage.promise;
       }
-      return Promise.resolve(deviceId === DEVICE_ONE.id
+      return Promise.resolve(measurementPage(deviceId === DEVICE_ONE.id
         ? [measurement(5), measurement(6)]
-        : [measurement(20, DEVICE_TWO.id)]);
+        : [measurement(20, DEVICE_TWO.id)]));
     });
     render(<App />);
     await logInAndSelect();
@@ -912,7 +932,7 @@ describe("App", () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("20"));
 
     await act(async () => {
-      stalePage.resolve([measurement(3), measurement(4)]);
+      stalePage.resolve(measurementPage([measurement(3), measurement(4)]));
       await stalePage.promise;
     });
 
@@ -927,9 +947,9 @@ describe("App", () => {
     api.getLatest.mockImplementation((deviceId: string) => Promise.resolve(
       deviceId === DEVICE_ONE.id ? measurement(2) : measurement(20, DEVICE_TWO.id),
     ));
-    api.getMeasurements.mockImplementation((deviceId: string) => Promise.resolve(
+    api.getMeasurements.mockImplementation((deviceId: string) => Promise.resolve(measurementPage(
       deviceId === DEVICE_ONE.id ? [measurement(1), measurement(2)] : [measurement(20, DEVICE_TWO.id)],
-    ));
+    )));
     nats.subscribeToMeasurements
       .mockImplementationOnce((_deviceId, _token, onNotification) => {
         staleNotification = onNotification;
