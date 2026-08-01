@@ -193,47 +193,49 @@ export default function App() {
       return;
     }
 
-    const latestRequest = getLatest(selectedDeviceId, accessToken).then(
-      (latest) => ({ latest, status: "fulfilled" as const }),
-      (error: unknown) => ({ error, status: "rejected" as const }),
-    );
-    const pageRequest = loadMeasurementPage(
+    const latestPromise = getLatest(selectedDeviceId, accessToken);
+    const pagePromise = loadMeasurementPage(
       selectedDeviceId,
       accessToken,
       selectedOffset,
       selectedOrder,
       generation,
       false,
-    ).then(
-      (page) => ({ page, status: "fulfilled" as const }),
-      (error: unknown) => ({ error, status: "rejected" as const }),
     );
     const loadGeneration = pageLoadGeneration.current;
+    let pairFailed = false;
+    const isCurrentPair = () => (
+      selectionGeneration.current === generation
+      && pageLoadGeneration.current === loadGeneration
+      && measurementNotificationGeneration.current === notificationGeneration
+    );
+    const rejectPair = (error: unknown, fallbackMessage: string) => {
+      pairFailed = true;
+      if (isCurrentPair()) {
+        setApiError(error instanceof Error ? error.message : fallbackMessage);
+      }
+      return { error, status: "rejected" as const };
+    };
+    const latestRequest = latestPromise.then(
+      (latest) => ({ latest, status: "fulfilled" as const }),
+      (error: unknown) => rejectPair(error, "Could not reload measurements"),
+    );
+    const pageRequest = pagePromise.then(
+      (page) => ({ page, status: "fulfilled" as const }),
+      (error: unknown) => rejectPair(error, "Could not load measurements"),
+    );
     void Promise.all([
       latestRequest,
       pageRequest,
     ]).then(([latestResult, pageResult]) => {
-      if (
-        selectionGeneration.current !== generation
-        || pageLoadGeneration.current !== loadGeneration
-        || measurementNotificationGeneration.current !== notificationGeneration
-      ) {
+      if (pairFailed || !isCurrentPair()) {
         return;
       }
-      if (pageResult.status === "rejected") {
-        setApiError(pageResult.error instanceof Error
-          ? pageResult.error.message
-          : "Could not load measurements");
+      if (pageResult.status !== "fulfilled" || latestResult.status !== "fulfilled") {
         return;
       }
       const page = pageResult.page;
       if (!page) {
-        return;
-      }
-      if (latestResult.status === "rejected") {
-        setApiError(latestResult.error instanceof Error
-          ? latestResult.error.message
-          : "Could not reload measurements");
         return;
       }
       offsetRef.current = page.offset;

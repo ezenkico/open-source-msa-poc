@@ -1159,6 +1159,44 @@ describe("App", () => {
       expect(screen.getAllByRole("row")[1]).toHaveTextContent("122");
     });
 
+    it("reports a page failure without waiting for latest and blocks its late success", async () => {
+      const initialRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
+      const pendingLatest = deferred<Measurement | null>();
+      const failedPage = deferred<MeasurementPage>();
+      api.getMeasurements.mockResolvedValueOnce(measurementPage(initialRows, { total: 120 }));
+      api.getLatest.mockResolvedValueOnce(measurement(120));
+      render(<App />);
+      await logInAndSelect();
+      await waitFor(() => expect(screen.getByText("Page 1 of 3")).toBeInTheDocument());
+      api.getLatest.mockClear();
+      api.getMeasurements.mockClear();
+      api.getLatest.mockReturnValueOnce(pendingLatest.promise);
+      api.getMeasurements.mockReturnValueOnce(failedPage.promise);
+      vi.useFakeTimers();
+
+      act(() => notification(measurement(121)));
+      await advanceTimersByTime(250);
+      await act(async () => {
+        failedPage.reject(new Error("live page failed promptly"));
+        await failedPage.promise.catch(() => undefined);
+      });
+
+      expect(screen.getByRole("alert")).toHaveTextContent("API error: live page failed promptly");
+      expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+      expect(screen.getAllByRole("row")).toHaveLength(PAGE_SIZE + 1);
+      expect(screen.getAllByRole("row")[1]).toHaveTextContent("120");
+
+      await act(async () => {
+        pendingLatest.resolve(measurement(999));
+        await pendingLatest.promise;
+      });
+
+      expect(screen.getByRole("alert")).toHaveTextContent("API error: live page failed promptly");
+      expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 121");
+      expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+      expect(screen.getAllByRole("row")[1]).toHaveTextContent("120");
+    });
+
     it("keeps the current page atomic when latest fails and retries on a later notification", async () => {
       const initialRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
       const failedLatest = deferred<Measurement | null>();
@@ -1208,6 +1246,44 @@ describe("App", () => {
       expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
       expect(screen.getAllByRole("row")).toHaveLength(2);
       expect(screen.getAllByRole("row")[1]).toHaveTextContent("122");
+    });
+
+    it("reports a latest failure without waiting for the page and blocks its late success", async () => {
+      const initialRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
+      const failedLatest = deferred<Measurement | null>();
+      const pendingPage = deferred<MeasurementPage>();
+      api.getMeasurements.mockResolvedValueOnce(measurementPage(initialRows, { total: 120 }));
+      api.getLatest.mockResolvedValueOnce(measurement(120));
+      render(<App />);
+      await logInAndSelect();
+      await waitFor(() => expect(screen.getByText("Page 1 of 3")).toBeInTheDocument());
+      api.getLatest.mockClear();
+      api.getMeasurements.mockClear();
+      api.getLatest.mockReturnValueOnce(failedLatest.promise);
+      api.getMeasurements.mockReturnValueOnce(pendingPage.promise);
+      vi.useFakeTimers();
+
+      act(() => notification(measurement(121)));
+      await advanceTimersByTime(250);
+      await act(async () => {
+        failedLatest.reject(new Error("live latest failed promptly"));
+        await failedLatest.promise.catch(() => undefined);
+      });
+
+      expect(screen.getByRole("alert")).toHaveTextContent("API error: live latest failed promptly");
+      expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+      expect(screen.getAllByRole("row")).toHaveLength(PAGE_SIZE + 1);
+      expect(screen.getAllByRole("row")[1]).toHaveTextContent("120");
+
+      await act(async () => {
+        pendingPage.resolve(measurementPage([measurement(999)], { total: 175 }));
+        await pendingPage.promise;
+      });
+
+      expect(screen.getByRole("alert")).toHaveTextContent("API error: live latest failed promptly");
+      expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 121");
+      expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+      expect(screen.getAllByRole("row")[1]).toHaveTextContent("120");
     });
 
     it("ignores a live refresh success after the measurement order changes", async () => {
