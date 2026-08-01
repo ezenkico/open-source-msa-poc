@@ -60,6 +60,8 @@ grep -Fq 'The simulator looks up `DEVICE_KEY` when `--key` is omitted' ReadMe.md
 ! grep -Fq 'as `DEVICE_ID` and `DEVICE_KEY_ENCRYPTION_KEY`, respectively' ReadMe.md
 grep -Fq 'The hidden prompt keeps the per-device key out of shell history and the shared `.env`' ReadMe.md
 ! grep -Fq 'storing provisioned values in `.env` avoids exposing real credentials' ReadMe.md
+grep -Fq 'debounced authoritative refresh' ReadMe.md
+grep -Fq 'updated page total' ReadMe.md
 grep -qx 'nats-keys' .gitignore
 grep -qx 'nats-keys' .dockerignore
 test ! -e setup-nkey.sh
