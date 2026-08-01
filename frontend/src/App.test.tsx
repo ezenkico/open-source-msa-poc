@@ -808,6 +808,33 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: /^next$/i })).toBeDisabled();
   });
 
+  it("normalizes an empty nonzero page to offset zero without a correction loop", async () => {
+    const firstPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
+    api.getMeasurements
+      .mockResolvedValueOnce(measurementPage(firstPageRows, { total: 120 }))
+      .mockResolvedValueOnce(measurementPage([], { total: 0, offset: 50 }));
+    render(<App />);
+    await logInAndSelect();
+    await screen.findByText("Page 1 of 3");
+
+    fireEvent.click(screen.getByRole("button", { name: /^next$/i }));
+
+    expect(await screen.findByText("Page 1 of 1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^previous$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^next$/i })).toBeDisabled();
+    expect(api.getMeasurements).toHaveBeenCalledTimes(2);
+
+    api.getMeasurements.mockClear();
+    api.getMeasurements.mockResolvedValue(measurementPage([], { total: 0 }));
+    act(() => reconnect());
+
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=0&order=desc`,
+    ));
+  });
+
   it("disables both page controls while an adjacent page request is pending", async () => {
     const pendingPage = deferred<MeasurementPage>();
     const firstPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));

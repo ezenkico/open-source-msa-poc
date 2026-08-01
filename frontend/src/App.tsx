@@ -141,15 +141,18 @@ export default function App() {
           }
         }
 
-        offsetRef.current = page.offset;
-        setOffset(page.offset);
-        setMeasurementPage(page);
+        const committedPage = page.total === 0 && page.offset !== 0
+          ? { ...page, offset: 0 }
+          : page;
+        offsetRef.current = committedPage.offset;
+        setOffset(committedPage.offset);
+        setMeasurementPage(committedPage);
         setMeasurementState((current) => ({
           ...current,
-          rows: page.results,
+          rows: committedPage.results,
         }));
         setApiError(null);
-        return page;
+        return committedPage;
       } catch (error) {
         if (isCurrentRequest()) {
           setApiError(error instanceof Error ? error.message : "Could not load measurements");
