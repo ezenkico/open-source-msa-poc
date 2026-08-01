@@ -542,6 +542,88 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 10");
   });
 
+  it("merges a queued notification after reconnect supersedes the initial page", async () => {
+    const initialLatest = deferred<Measurement | null>();
+    const initialPage = deferred<MeasurementPage>();
+    api.getLatest
+      .mockReturnValueOnce(initialLatest.promise)
+      .mockResolvedValueOnce(measurement(2));
+    api.getMeasurements
+      .mockReturnValueOnce(initialPage.promise)
+      .mockResolvedValueOnce(measurementPage([measurement(2), measurement(1)], { total: 2 }));
+    render(<App />);
+    await logInAndSelect();
+    await waitFor(() => expect(nats.subscribeToMeasurements).toHaveBeenCalledOnce());
+    act(() => notification(measurement(3)));
+
+    act(() => reconnect());
+    await screen.findByText("2 measurements");
+    expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 2");
+
+    await act(async () => {
+      initialLatest.resolve(measurement(2));
+      initialPage.resolve(measurementPage([measurement(2), measurement(1)], { total: 2 }));
+      await Promise.all([initialLatest.promise, initialPage.promise]);
+    });
+
+    expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 3");
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "Refresh scheduled",
+    );
+  });
+
+  it("commits a still-current initial latest result after an order-only page load", async () => {
+    const initialLatest = deferred<Measurement | null>();
+    api.getLatest.mockReturnValueOnce(initialLatest.promise);
+    api.getMeasurements.mockImplementation((_deviceId, _token, query) => Promise.resolve(
+      query.endsWith("order=asc")
+        ? measurementPage([measurement(1), measurement(2)], { total: 2, order: "asc" })
+        : measurementPage([measurement(2), measurement(1)], { total: 2 }),
+    ));
+    render(<App />);
+    await logInAndSelect();
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=0&order=desc`,
+    ));
+
+    fireEvent.change(screen.getByLabelText(/measurement order/i), { target: { value: "asc" } });
+    await screen.findByText("Page 1 of 1");
+    await act(async () => {
+      initialLatest.resolve(measurement(2));
+      await initialLatest.promise;
+    });
+
+    expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 2");
+  });
+
+  it("reports a still-current initial latest failure after an order-only page load", async () => {
+    const initialLatest = deferred<Measurement | null>();
+    api.getLatest.mockReturnValueOnce(initialLatest.promise);
+    api.getMeasurements.mockImplementation((_deviceId, _token, query) => Promise.resolve(
+      query.endsWith("order=asc")
+        ? measurementPage([measurement(1), measurement(2)], { total: 2, order: "asc" })
+        : measurementPage([measurement(2), measurement(1)], { total: 2 }),
+    ));
+    render(<App />);
+    await logInAndSelect();
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=0&order=desc`,
+    ));
+
+    fireEvent.change(screen.getByLabelText(/measurement order/i), { target: { value: "asc" } });
+    await screen.findByText("Page 1 of 1");
+    await act(async () => {
+      initialLatest.reject(new Error("initial latest remains current"));
+      await initialLatest.promise.catch(() => undefined);
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("API error: initial latest remains current");
+  });
+
   it("restores a valid session only after devices and capability both load", async () => {
     const listedDevices = deferred<typeof DEVICE_ONE[]>();
     const currentUser = deferred<{ can_add_devices: boolean }>();
