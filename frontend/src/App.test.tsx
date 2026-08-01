@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { PAGE_SIZE } from "./App";
 import type { CreatedDevice, MeasurementOrder, MeasurementPage } from "./api";
@@ -129,6 +129,7 @@ describe("App", () => {
   let notification: (value: Measurement) => void;
   let reconnect: () => void;
   let deviceCreated: () => void;
+  let deviceConnectionFailure: (error: Error) => void;
   let deviceReconnect: () => void;
   let close: ReturnType<typeof vi.fn>;
   let closeDeviceCreations: ReturnType<typeof vi.fn>;
@@ -153,11 +154,141 @@ describe("App", () => {
       },
     );
     nats.subscribeToDeviceCreations.mockImplementation(
-      async (_token, onDeviceCreated, onReconnect) => {
+      async (_token, onDeviceCreated, onReconnect, onError) => {
         deviceCreated = onDeviceCreated;
+        deviceConnectionFailure = onError;
         deviceReconnect = onReconnect;
         return closeDeviceCreations;
       },
+    );
+  });
+
+  it("presents a named sign-in region without dashboard navigation", async () => {
+    render(<App />);
+
+    const signIn = await screen.findByRole("region", { name: "Sign in" });
+    expect(within(signIn).getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(within(signIn).getByLabelText("Username")).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Devices" })).not.toBeInTheDocument();
+  });
+
+  it("presents the authenticated operational shell and signs out from its banner", async () => {
+    render(<App />);
+    await logInAndSelect();
+
+    const banner = screen.getByRole("banner");
+    expect(within(banner).getByText("IoT Operations")).toBeInTheDocument();
+    expect(within(banner).getByRole("status", { name: "Connection status" })).toHaveTextContent("Live");
+    expect(within(banner).getByText("Authenticated session")).toBeInTheDocument();
+
+    const navigation = screen.getByRole("navigation", { name: "Devices" });
+    expect(within(navigation).getByRole("button", {
+      name: `Select Boiler device ${DEVICE_ONE.id}`,
+    })).toHaveAttribute("aria-pressed", "true");
+
+    const workspace = screen.getByRole("main");
+    expect(within(workspace).getByRole("heading", { name: "Boiler" })).toBeInTheDocument();
+    const deviceIdLabel = within(workspace).getByText("Device ID:", { selector: "strong" });
+    expect(deviceIdLabel.parentElement).toHaveTextContent(DEVICE_ONE.id);
+    expect(await within(workspace).findByText("2 measurements")).toBeInTheDocument();
+
+    fireEvent.click(within(banner).getByRole("button", { name: "Sign out" }));
+
+    expect(await screen.findByRole("region", { name: "Sign in" })).toBeInTheDocument();
+    expect(session.clearAccessToken).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("navigation", { name: "Devices" })).not.toBeInTheDocument();
+  });
+
+  it("reports device updates as connecting until ready and clears an error on reconnect", async () => {
+    const subscriptionReady = deferred<() => void>();
+    nats.subscribeToDeviceCreations.mockImplementation(
+      async (_token, onDeviceCreated, onReconnect, onError) => {
+        deviceCreated = onDeviceCreated;
+        deviceConnectionFailure = onError;
+        deviceReconnect = onReconnect;
+        return subscriptionReady.promise;
+      },
+    );
+    render(<App />);
+    await logIn();
+
+    const connection = screen.getByRole("status", { name: "Connection status" });
+    expect(connection).toHaveTextContent("Connecting");
+
+    await act(async () => {
+      subscriptionReady.resolve(closeDeviceCreations);
+      await subscriptionReady.promise;
+    });
+    expect(connection).toHaveTextContent("Live");
+
+    act(() => deviceConnectionFailure(new Error("Device updates disconnected")));
+    expect(connection).toHaveTextContent("Connection issue");
+    expect(screen.getByRole("alert")).toHaveTextContent("Device updates disconnected");
+
+    act(() => deviceReconnect());
+
+    await waitFor(() => expect(connection).toHaveTextContent("Live"));
+    expect(screen.queryByText(/Device updates disconnected/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps the selected workspace in its initial loading state while notification setup is pending", async () => {
+    const measurementToken = deferred<string>();
+    render(<App />);
+    await logIn();
+    await waitFor(() => expect(nats.subscribeToDeviceCreations).toHaveBeenCalledOnce());
+    api.getNatsToken.mockReturnValueOnce(measurementToken.promise);
+
+    fireEvent.change(screen.getByLabelText("Selected device"), { target: { value: DEVICE_ONE.id } });
+
+    expect(screen.getByLabelText("Device connection status")).toHaveTextContent("Connecting");
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "Connecting to telemetry",
+    );
+    expect(screen.queryByText("No measurements available for this device.")).not.toBeInTheDocument();
+    expect(screen.queryByText("No latest reading yet.")).not.toBeInTheDocument();
+
+    await act(async () => {
+      measurementToken.resolve("measurement-nats-token");
+      await measurementToken.promise;
+    });
+
+    await waitFor(() => expect(screen.getByLabelText("Device connection status")).toHaveTextContent("Streaming"));
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "History up to date",
+    );
+  });
+
+  it("keeps measurement history controls in a named region", async () => {
+    render(<App />);
+    await logInAndSelect();
+
+    const history = await screen.findByRole("region", { name: "Measurement history" });
+    expect(within(history).getByLabelText("Measurement order")).toHaveValue("desc");
+    expect(within(history).getByRole("button", { name: "Previous" })).toBeDisabled();
+    expect(within(history).getByRole("button", { name: "Next" })).toBeDisabled();
+    expect(within(history).getByText("Page 1 of 1")).toBeInTheDocument();
+  });
+
+  it("announces history loading and renders explicit empty states", async () => {
+    const pendingPage = deferred<MeasurementPage>();
+    api.getLatest.mockResolvedValue(null);
+    api.getMeasurements.mockReturnValueOnce(pendingPage.promise);
+    render(<App />);
+    await logInAndSelect();
+
+    expect(await screen.findByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "Refreshing history",
+    );
+
+    await act(async () => {
+      pendingPage.resolve(measurementPage([], { total: 0 }));
+      await pendingPage.promise;
+    });
+
+    expect(await screen.findByText("No measurements available for this device.")).toBeInTheDocument();
+    expect(screen.getByText("No latest reading yet.")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "History up to date",
     );
   });
 

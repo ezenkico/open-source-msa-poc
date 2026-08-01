@@ -229,6 +229,9 @@ describe("DeviceProvisioning", () => {
     expect(onCreated).toHaveBeenCalledWith(CREATED_DEVICE);
     expect(storageWrite).not.toHaveBeenCalled();
 
+    const warning = screen.getByRole("note", { name: "One-time credential warning" });
+    expect(warning).toHaveTextContent("Save this key now. It cannot be retrieved later.");
+
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
 
     expect(screen.queryByText(CREATED_DEVICE.id)).not.toBeInTheDocument();

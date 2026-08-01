@@ -21,11 +21,13 @@ import {
   type MeasurementState,
 } from "./measurementState";
 import { clearAccessToken, restoreAccessToken, storeAccessToken } from "./session";
+import { Button, Field, Panel, StatusBadge } from "./ui";
 import { useDebouncedCallback } from "./useDebouncedCallback";
 
 export const PAGE_SIZE = 50;
 
 const EMPTY_STATE: MeasurementState = { latest: null, rows: [], missingRange: null };
+type ConnectionState = "connecting" | "live" | "error";
 
 function formatTime(timestamp: string): string {
   return new Date(timestamp).toLocaleString();
@@ -68,8 +70,13 @@ export default function App() {
   const [order, setOrder] = useState<MeasurementOrder>("desc");
   const [measurementPage, setMeasurementPage] = useState<MeasurementPage | null>(null);
   const [isPageLoading, setIsPageLoading] = useState(false);
+  const [isInitialMeasurementLoading, setIsInitialMeasurementLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
-  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [deviceUpdatesConnection, setDeviceUpdatesConnection] = useState<ConnectionState>("connecting");
+  const [measurementConnection, setMeasurementConnection] = useState<ConnectionState>("connecting");
+  const [deviceUpdatesError, setDeviceUpdatesError] = useState<string | null>(null);
+  const [measurementConnectionError, setMeasurementConnectionError] = useState<string | null>(null);
+  const connectionError = measurementConnectionError ?? deviceUpdatesError;
   const selectionGeneration = useRef(0);
   const pageRequestGeneration = useRef(0);
   const pageLoadGeneration = useRef(0);
@@ -100,7 +107,11 @@ export default function App() {
     setOrder("desc");
     setMeasurementPage(null);
     setIsPageLoading(false);
-    setConnectionError(null);
+    setIsInitialMeasurementLoading(false);
+    setDeviceUpdatesConnection("connecting");
+    setMeasurementConnection("connecting");
+    setDeviceUpdatesError(null);
+    setMeasurementConnectionError(null);
   }, []);
 
   const loadMeasurementPage = useCallback(async (
@@ -283,7 +294,9 @@ export default function App() {
         setOffset(0);
         setMeasurementPage(null);
         setIsPageLoading(false);
-        setConnectionError(null);
+        setIsInitialMeasurementLoading(false);
+        setMeasurementConnection("connecting");
+        setMeasurementConnectionError(null);
       }
     } catch (error) {
       if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
@@ -323,6 +336,7 @@ export default function App() {
         setOffset(0);
         setMeasurementPage(null);
         setIsPageLoading(false);
+        setIsInitialMeasurementLoading(false);
       }
     }).catch((error: unknown) => {
       if (disposed) {
@@ -394,6 +408,7 @@ export default function App() {
       setOffset(0);
       setMeasurementPage(null);
       setIsPageLoading(false);
+      setIsInitialMeasurementLoading(false);
     } catch (error) {
       if (loginAttemptGeneration.current === attemptGeneration) {
         setApiError(error instanceof Error ? error.message : "Login failed");
@@ -432,11 +447,13 @@ export default function App() {
     offsetRef.current = 0;
     setDeviceId(selectedDeviceId);
     setOffset(0);
-    setConnectionError(null);
+    setMeasurementConnection("connecting");
+    setMeasurementConnectionError(null);
     setApiError(null);
     setMeasurementState(EMPTY_STATE);
     setMeasurementPage(null);
     setIsPageLoading(false);
+    setIsInitialMeasurementLoading(Boolean(selectedDeviceId));
   }
 
   useEffect(() => {
@@ -448,6 +465,8 @@ export default function App() {
     const authGeneration = authenticationGeneration.current;
     let disposed = false;
     let closeSubscription: () => void = () => {};
+    setDeviceUpdatesConnection("connecting");
+    setDeviceUpdatesError(null);
 
     void getNatsToken(token).then((natsToken) => {
       if (disposed) {
@@ -462,12 +481,15 @@ export default function App() {
         },
         () => {
           if (!disposed) {
+            setDeviceUpdatesConnection("live");
+            setDeviceUpdatesError(null);
             void refreshDevices(token, authGeneration);
           }
         },
         (error) => {
           if (!disposed) {
-            setConnectionError(error.message);
+            setDeviceUpdatesConnection("error");
+            setDeviceUpdatesError(error.message);
           }
         },
       );
@@ -479,11 +501,14 @@ export default function App() {
         close();
       } else {
         closeSubscription = close;
+        setDeviceUpdatesConnection("live");
+        setDeviceUpdatesError(null);
         void refreshDevices(token, authGeneration);
       }
     }).catch((error: unknown) => {
       if (!disposed) {
-        setConnectionError(error instanceof Error ? error.message : "Could not connect to device notifications");
+        setDeviceUpdatesConnection("error");
+        setDeviceUpdatesError(error instanceof Error ? error.message : "Could not connect to device notifications");
       }
     });
 
@@ -505,6 +530,8 @@ export default function App() {
     let initialStateLoaded = false;
     const pendingNotifications: Measurement[] = [];
     const isCurrent = () => !disposed && selectionGeneration.current === generation;
+    setMeasurementConnection("connecting");
+    setMeasurementConnectionError(null);
 
     async function start() {
       try {
@@ -527,6 +554,11 @@ export default function App() {
             }
           },
           () => {
+            if (!isCurrent()) {
+              return;
+            }
+            setMeasurementConnection("live");
+            setMeasurementConnectionError(null);
             const reconnectOffset = offsetRef.current;
             const reconnectOrder = orderRef.current;
             void Promise.all([
@@ -550,7 +582,8 @@ export default function App() {
           },
           (error) => {
             if (isCurrent()) {
-              setConnectionError(error.message);
+              setMeasurementConnection("error");
+              setMeasurementConnectionError(error.message);
             }
           },
         );
@@ -559,6 +592,8 @@ export default function App() {
           return;
         }
         closeSubscription = close;
+        setMeasurementConnection("live");
+        setMeasurementConnectionError(null);
         const initialOffset = offsetRef.current;
         const initialOrder = orderRef.current;
         const [latest] = await Promise.all([
@@ -575,9 +610,12 @@ export default function App() {
           (state, notification) => mergeNotification(state, notification),
           { ...current, latest },
         ));
+        setIsInitialMeasurementLoading(false);
       } catch (error) {
         if (isCurrent()) {
-          setConnectionError(error instanceof Error ? error.message : "Could not connect to notifications");
+          setMeasurementConnection("error");
+          setMeasurementConnectionError(error instanceof Error ? error.message : "Could not connect to notifications");
+          setIsInitialMeasurementLoading(false);
         }
       }
     }
@@ -689,93 +727,353 @@ export default function App() {
     }
   }
 
+  if (!accessToken) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100">
+        <main className="mx-auto grid min-h-screen w-full max-w-6xl items-center gap-12 px-5 py-12 lg:grid-cols-[1.15fr_0.85fr] lg:px-10">
+          <section aria-labelledby="product-heading" className="max-w-2xl">
+            <div className="mb-8 flex h-14 w-14 items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-400/10 text-cyan-300 shadow-lg shadow-cyan-950/30">
+              <svg aria-hidden="true" className="h-7 w-7" fill="none" viewBox="0 0 24 24">
+                <path d="M4 17V7m5 10V4m5 13V9m5 8V6" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+              </svg>
+            </div>
+            <p className="mb-3 text-sm font-semibold uppercase tracking-[0.25em] text-cyan-300">IoT Operations</p>
+            <h1 id="product-heading" className="max-w-xl text-4xl font-semibold tracking-tight text-white sm:text-5xl">
+              Telemetry you can act on.
+            </h1>
+            <p className="mt-6 max-w-xl text-lg leading-8 text-slate-400">
+              Monitor connected devices, inspect authoritative measurement history, and provision new equipment from one focused workspace.
+            </p>
+            <dl className="mt-10 grid max-w-xl grid-cols-2 gap-4 text-sm sm:grid-cols-3">
+              <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+                <dt className="text-slate-500">Signal</dt>
+                <dd className="mt-1 font-semibold text-teal-300">Live events</dd>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+                <dt className="text-slate-500">History</dt>
+                <dd className="mt-1 font-semibold text-slate-200">Authoritative</dd>
+              </div>
+              <div className="col-span-2 rounded-xl border border-slate-800 bg-slate-900/50 p-4 sm:col-span-1">
+                <dt className="text-slate-500">Access</dt>
+                <dd className="mt-1 font-semibold text-slate-200">Permission-aware</dd>
+              </div>
+            </dl>
+          </section>
+
+          {isStarting ? (
+            <Panel aria-label="Session loading" className="p-8">
+              <p aria-live="polite" className="text-sm text-slate-300" role="status">Restoring session…</p>
+            </Panel>
+          ) : (
+            <Panel aria-labelledby="sign-in-heading" className="p-6 sm:p-8">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Secure workspace</p>
+              <h2 id="sign-in-heading" className="mt-2 text-2xl font-semibold text-white">Sign in</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-400">Use your operator credentials to access device telemetry.</p>
+              <form aria-label="Sign in" className="mt-8 grid gap-5" onSubmit={submitLogin}>
+                <Field>
+                  Username
+                  <input
+                    autoComplete="username"
+                    className="min-h-11 rounded-lg border border-slate-700 bg-slate-950/80 px-3.5 py-2.5 text-slate-100 placeholder:text-slate-600 hover:border-slate-600"
+                    onChange={(event) => setUsername(event.target.value)}
+                    required
+                    value={username}
+                  />
+                </Field>
+                <Field>
+                  Password
+                  <input
+                    autoComplete="current-password"
+                    className="min-h-11 rounded-lg border border-slate-700 bg-slate-950/80 px-3.5 py-2.5 text-slate-100 placeholder:text-slate-600 hover:border-slate-600"
+                    onChange={(event) => setPassword(event.target.value)}
+                    required
+                    type="password"
+                    value={password}
+                  />
+                </Field>
+                <Button className="mt-2 w-full" type="submit">Sign in</Button>
+              </form>
+              {apiError && (
+                <p className="mt-5 rounded-lg border border-red-400/25 bg-red-500/10 px-4 py-3 text-sm text-red-200" role="alert">
+                  API error: {apiError}
+                </p>
+              )}
+            </Panel>
+          )}
+        </main>
+      </div>
+    );
+  }
+
   return (
-    <main>
-      <h1>IoT measurements</h1>
-      {!isStarting && !accessToken && (
-        <form onSubmit={submitLogin}>
-          <label>
-            Username
-            <input value={username} onChange={(event) => setUsername(event.target.value)} required autoComplete="username" />
-          </label>
-          <label>
-            Password
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="current-password" />
-          </label>
-          <button type="submit">Sign in</button>
-        </form>
-      )}
-
-      {accessToken && (
-        <>
-          <label>
-            Selected device
-            <select value={deviceId} onChange={(event) => selectDevice(event.target.value)}>
-              <option value="">Choose a device</option>
-              {devices.map((device) => (
-                <option key={device.id} value={device.id}>{device.name} — {device.id}</option>
-              ))}
-            </select>
-          </label>
-          {selectedDevice && <p><strong>Device ID:</strong> {selectedDevice.id}</p>}
-          <DeviceProvisioning
-            accessToken={accessToken}
-            canAddDevices={canAddDevices}
-            onCreated={refreshAfterCreation}
-            onAuthenticationLost={logout}
-            onPermissionDenied={handlePermissionDenied}
-          />
-        </>
-      )}
-
-      {apiError && <p role="alert">API error: {apiError}</p>}
-      {connectionError && <p role="alert">Connection error: {connectionError}</p>}
-
-      <section aria-live="polite">
-        <h2>Latest measurement{latest ? `: ${latest.measurement_name} ${latest.value}` : ""}</h2>
-        {latest ? <p>{latest.measured_at}</p> : <p>No measurements yet.</p>}
-      </section>
-
-      <section aria-label="Measurement history">
-        <h2>Measurement history</h2>
-        <label>
-          Measurement order
-          <select
-            value={order}
-            onChange={(event) => changeMeasurementOrder(event.target.value as MeasurementOrder)}
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <header className="sticky top-0 z-20 border-b border-slate-800/90 bg-slate-950/85 backdrop-blur-xl">
+        <div className="mx-auto flex w-full max-w-[96rem] flex-wrap items-center gap-4 px-4 py-3 sm:px-6 lg:px-8">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-cyan-300/20 bg-cyan-400/10 text-cyan-300">
+              <svg aria-hidden="true" className="h-5 w-5" fill="none" viewBox="0 0 24 24">
+                <path d="M4 17V7m5 10V4m5 13V9m5 8V6" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+              </svg>
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-white">IoT Operations</p>
+              <p className="truncate text-xs text-slate-500">Telemetry control plane</p>
+            </div>
+          </div>
+          <StatusBadge
+            appearance={deviceUpdatesConnection === "error" ? "warning" : deviceUpdatesConnection === "live" ? "live" : "neutral"}
+            aria-label="Connection status"
+            aria-live="polite"
+            role="status"
           >
-            <option value="desc">Newest first</option>
-            <option value="asc">Oldest first</option>
-          </select>
-        </label>
-        <button
-          type="button"
-          onClick={() => measurementPage && loadAdjacentPage(Math.max(0, measurementPage.offset - measurementPage.limit))}
-          disabled={isPageLoading || !hasPrevious}
-        >
-          Previous
-        </button>
-        <span>Page {currentPage} of {totalPages}</span>
-        <button
-          type="button"
-          onClick={() => measurementPage && loadAdjacentPage(measurementPage.offset + measurementPage.limit)}
-          disabled={isPageLoading || !hasNext}
-        >
-          Next
-        </button>
-        <table>
-          <thead>
-            <tr><th scope="col">Index</th><th scope="col">Name</th><th scope="col">Value</th><th scope="col">Measured time</th><th scope="col">Received time</th></tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={row.entry_index}>
-                <td>{row.entry_index}</td><td>{row.measurement_name}</td><td>{row.value}</td><td>{formatTime(row.measured_at)}</td><td>{formatTime(row.received_at)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-    </main>
+            <span
+              aria-hidden="true"
+              className={`h-1.5 w-1.5 rounded-full ${
+                deviceUpdatesConnection === "error"
+                  ? "bg-amber-300"
+                  : deviceUpdatesConnection === "live" ? "bg-teal-300" : "bg-slate-400"
+              }`}
+            />
+            {deviceUpdatesConnection === "error" ? "Connection issue" : deviceUpdatesConnection === "live" ? "Live" : "Connecting"}
+          </StatusBadge>
+          <span className="hidden text-sm text-slate-400 sm:inline">Authenticated session</span>
+          <Button appearance="secondary" onClick={logout}>Sign out</Button>
+        </div>
+      </header>
+
+      <div className="mx-auto w-full max-w-[96rem] px-4 py-6 sm:px-6 lg:px-8">
+        {(apiError || connectionError) && (
+          <div className="mb-5 grid gap-3">
+            {apiError && (
+              <p className="rounded-xl border border-red-400/25 bg-red-500/10 px-4 py-3 text-sm text-red-200" role="alert">
+                API error: {apiError}
+              </p>
+            )}
+            {connectionError && (
+              <p className="rounded-xl border border-red-400/25 bg-red-500/10 px-4 py-3 text-sm text-red-200" role="alert">
+                Connection error: {connectionError}
+              </p>
+            )}
+          </div>
+        )}
+
+        <div className="grid min-w-0 gap-6 lg:grid-cols-[20rem_minmax(0,1fr)]">
+          <aside className="min-w-0 self-start lg:sticky lg:top-24">
+            <nav aria-label="Devices">
+              <Panel className="overflow-hidden">
+              <div className="border-b border-slate-800 px-5 py-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="font-semibold text-white">Devices</h2>
+                  <StatusBadge>{devices.length}</StatusBadge>
+                </div>
+                <p className="mt-1 text-xs text-slate-500">Select a source to inspect telemetry.</p>
+              </div>
+              <div className="p-3">
+                <Field className="mb-3 px-1 text-xs text-slate-400">
+                  Selected device
+                  <select
+                    className="min-h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 hover:border-slate-600"
+                    onChange={(event) => selectDevice(event.target.value)}
+                    value={deviceId}
+                  >
+                    <option value="">Choose a device</option>
+                    {devices.map((device) => (
+                      <option key={device.id} value={device.id}>{device.name} — {device.id}</option>
+                    ))}
+                  </select>
+                </Field>
+                <div className="grid gap-1.5">
+                  {devices.length === 0 && (
+                    <p className="rounded-lg border border-dashed border-slate-700 px-3 py-5 text-center text-sm text-slate-500">
+                      No devices available.
+                    </p>
+                  )}
+                  {devices.map((device) => {
+                    const isSelected = device.id === deviceId;
+                    return (
+                      <button
+                        aria-label={`Select ${device.name} device ${device.id}`}
+                        aria-pressed={isSelected}
+                        className={`min-w-0 rounded-xl border px-3.5 py-3 text-left transition-colors ${
+                          isSelected
+                            ? "border-cyan-400/35 bg-cyan-400/10 text-white"
+                            : "border-transparent text-slate-300 hover:border-slate-700 hover:bg-slate-800/70"
+                        }`}
+                        key={device.id}
+                        onClick={() => selectDevice(device.id)}
+                        type="button"
+                      >
+                        <span className="block truncate text-sm font-semibold">{device.name}</span>
+                        <span className={`mt-1 block break-all font-mono text-[0.68rem] leading-4 ${isSelected ? "text-cyan-200/70" : "text-slate-600"}`}>
+                          {device.id}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              </Panel>
+            </nav>
+
+            <div className="mt-4">
+              <DeviceProvisioning
+                accessToken={accessToken}
+                canAddDevices={canAddDevices}
+                onAuthenticationLost={logout}
+                onCreated={refreshAfterCreation}
+                onPermissionDenied={handlePermissionDenied}
+              />
+            </div>
+          </aside>
+
+          <main className="min-w-0">
+            {!selectedDevice ? (
+              <Panel className="flex min-h-72 items-center justify-center p-8 text-center">
+                <div className="max-w-md">
+                  <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-slate-400">
+                    <svg aria-hidden="true" className="h-5 w-5" fill="none" viewBox="0 0 24 24">
+                      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+                    </svg>
+                  </span>
+                  <h1 className="mt-5 text-xl font-semibold text-white">Choose a device</h1>
+                  <p className="mt-2 text-sm leading-6 text-slate-400">
+                    Select a device from the navigation to view its latest reading and authoritative history.
+                  </p>
+                </div>
+              </Panel>
+            ) : (
+              <div className="grid min-w-0 gap-6">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Device workspace</p>
+                  <h1 className="mt-2 truncate text-3xl font-semibold tracking-tight text-white">{selectedDevice.name}</h1>
+                  <p className="mt-2 break-all font-mono text-xs text-slate-500">{selectedDevice.id}</p>
+                </div>
+
+                <div className="grid min-w-0 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  <Panel aria-live="polite" className="overflow-hidden border-cyan-400/20 p-5 sm:col-span-2 xl:col-span-1">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Latest reading</p>
+                    <h2 className="mt-3 text-sm font-medium text-slate-300">
+                      Latest measurement{latest ? `: ${latest.measurement_name} ${latest.value}` : ""}
+                    </h2>
+                    {isInitialMeasurementLoading ? (
+                      <p className="mt-3 text-sm text-slate-500">Waiting for latest reading…</p>
+                    ) : latest ? (
+                      <>
+                        <p className="mt-2 truncate text-3xl font-semibold tabular-nums text-cyan-300">{latest.value}</p>
+                        <p className="mt-2 truncate text-xs text-slate-500">{latest.measurement_name} · {latest.measured_at}</p>
+                      </>
+                    ) : (
+                      <p className="mt-3 text-sm text-slate-500">No latest reading yet.</p>
+                    )}
+                  </Panel>
+                  <Panel className="p-5">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Device identity</p>
+                    <p className="mt-3 break-all font-mono text-xs leading-5 text-slate-300">
+                      <strong className="font-sans text-slate-400">Device ID:</strong> {selectedDevice.id}
+                    </p>
+                  </Panel>
+                  <Panel className="p-5">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Connection</p>
+                    <StatusBadge
+                      appearance={measurementConnection === "error" ? "warning" : measurementConnection === "live" ? "live" : "neutral"}
+                      aria-label="Device connection status"
+                      className="mt-3"
+                    >
+                      {measurementConnection === "error" ? "Attention needed" : measurementConnection === "live" ? "Streaming" : "Connecting"}
+                    </StatusBadge>
+                  </Panel>
+                  <Panel className="p-5">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">History total</p>
+                    <p className="mt-3 text-2xl font-semibold tabular-nums text-white">
+                      {isInitialMeasurementLoading ? "Loading total…" : `${measurementPage?.total ?? 0} measurements`}
+                    </p>
+                  </Panel>
+                </div>
+
+                <Panel aria-label="Measurement history" className="min-w-0 overflow-hidden">
+                  <div className="flex flex-col gap-4 border-b border-slate-800 px-5 py-5 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Authoritative log</p>
+                      <h2 className="mt-1 text-lg font-semibold text-white">Measurement history</h2>
+                      <p aria-label="Measurement history status" aria-live="polite" className="mt-1 text-xs text-slate-500" role="status">
+                        {isInitialMeasurementLoading && measurementConnection === "connecting"
+                          ? "Connecting to telemetry…"
+                          : isPageLoading ? "Refreshing history…" : "History up to date"}
+                      </p>
+                    </div>
+                    <Field className="w-full sm:w-44">
+                      Measurement order
+                      <select
+                        className="min-h-10 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 hover:border-slate-600"
+                        onChange={(event) => changeMeasurementOrder(event.target.value as MeasurementOrder)}
+                        value={order}
+                      >
+                        <option value="desc">Newest first</option>
+                        <option value="asc">Oldest first</option>
+                      </select>
+                    </Field>
+                  </div>
+
+                  <div className="max-w-full overflow-x-auto">
+                    <table className="w-full min-w-[48rem] border-collapse text-left text-sm">
+                      <thead className="bg-slate-950/60 text-xs uppercase tracking-wide text-slate-500">
+                        <tr>
+                          <th className="px-5 py-3 font-semibold" scope="col">Index</th>
+                          <th className="px-5 py-3 font-semibold" scope="col">Name</th>
+                          <th className="px-5 py-3 font-semibold" scope="col">Value</th>
+                          <th className="px-5 py-3 font-semibold" scope="col">Measured time</th>
+                          <th className="px-5 py-3 font-semibold" scope="col">Received time</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/80">
+                        {isInitialMeasurementLoading ? (
+                          <tr>
+                            <td className="px-5 py-12 text-center text-slate-500" colSpan={5}>
+                              Loading measurements…
+                            </td>
+                          </tr>
+                        ) : rows.length === 0 ? (
+                          <tr>
+                            <td className="px-5 py-12 text-center text-slate-500" colSpan={5}>
+                              No measurements available for this device.
+                            </td>
+                          </tr>
+                        ) : rows.map((row) => (
+                          <tr className="odd:bg-slate-900/30 hover:bg-slate-800/60" key={row.entry_index}>
+                            <td className="px-5 py-3.5 font-mono text-xs tabular-nums text-slate-400">{row.entry_index}</td>
+                            <td className="px-5 py-3.5 font-medium text-slate-200">{row.measurement_name}</td>
+                            <td className="px-5 py-3.5 font-semibold tabular-nums text-cyan-200">{row.value}</td>
+                            <td className="whitespace-nowrap px-5 py-3.5 tabular-nums text-slate-400">{formatTime(row.measured_at)}</td>
+                            <td className="whitespace-nowrap px-5 py-3.5 tabular-nums text-slate-400">{formatTime(row.received_at)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 px-5 py-4">
+                    <Button
+                      appearance="secondary"
+                      disabled={isPageLoading || !hasPrevious}
+                      onClick={() => measurementPage && loadAdjacentPage(Math.max(0, measurementPage.offset - measurementPage.limit))}
+                    >
+                      Previous
+                    </Button>
+                    <span className="text-sm tabular-nums text-slate-400">Page {currentPage} of {totalPages}</span>
+                    <Button
+                      appearance="secondary"
+                      disabled={isPageLoading || !hasNext}
+                      onClick={() => measurementPage && loadAdjacentPage(measurementPage.offset + measurementPage.limit)}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </Panel>
+              </div>
+            )}
+          </main>
+        </div>
+      </div>
+    </div>
   );
 }

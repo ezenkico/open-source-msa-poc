@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { ApiError, createDevice, type CreatedDevice } from "./api";
+import { Button, Field, Panel } from "./ui";
 
 export type DeviceProvisioningProps = {
   accessToken: string;
@@ -108,47 +109,86 @@ function EnabledDeviceProvisioning({
   }
 
   return (
-    <section aria-labelledby="device-provisioning-heading">
-      <h2 id="device-provisioning-heading">Add device</h2>
-      <form aria-label="Add device" onSubmit={submitDevice}>
-        <label htmlFor="device-name">Device name</label>
+    <Panel aria-labelledby="device-provisioning-heading" className="p-5">
+      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Provisioning</p>
+      <h2 className="mt-1 font-semibold text-white" id="device-provisioning-heading">Add device</h2>
+      <p className="mt-1 text-xs leading-5 text-slate-500">Create credentials for a new telemetry source.</p>
+      <form aria-label="Add device" className="mt-5 grid gap-4" onSubmit={submitDevice}>
+        <Field htmlFor="device-name">
+          Device name
+        </Field>
         <input
+          className="min-h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 hover:border-slate-600"
           id="device-name"
           name="device-name"
+          onChange={(event) => setName(event.target.value)}
+          placeholder="e.g. Boiler room"
           required
           value={name}
-          onChange={(event) => setName(event.target.value)}
         />
-        <button disabled={isSubmitting} type="submit">
+        <Button className="w-full" disabled={isSubmitting} type="submit">
           {isSubmitting ? "Creating device…" : "Create device"}
-        </button>
+        </Button>
       </form>
 
-      {error && <p role="alert">{error}</p>}
+      {error && (
+        <p className="mt-4 rounded-lg border border-red-400/25 bg-red-500/10 px-3 py-2.5 text-sm text-red-200" role="alert">
+          {error}
+        </p>
+      )}
 
       {createdDevice && (
-        <section aria-labelledby="created-device-heading">
-          <h3 id="created-device-heading">Device credentials</h3>
-          <p>Save this key now. It cannot be retrieved later.</p>
-          <dl>
-            <dt>Name</dt>
-            <dd>{createdDevice.name}</dd>
-            <dt>ID</dt>
-            <dd>{createdDevice.id}</dd>
-            <dt>Key</dt>
-            <dd>{createdDevice.key}</dd>
+        <Panel aria-labelledby="created-device-heading" className="mt-5 border-amber-400/20 bg-slate-950/60 p-4">
+          <h3 className="font-semibold text-white" id="created-device-heading">Device credentials</h3>
+          <div
+            aria-label="One-time credential warning"
+            className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3.5 py-3 text-sm leading-5 text-amber-100"
+            role="note"
+          >
+            <p className="font-semibold">Save this key now. It cannot be retrieved later.</p>
+            <p className="mt-1 text-xs text-amber-200/70">Dismiss only after storing both values securely.</p>
+          </div>
+          <dl className="mt-4 grid gap-3">
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Name</dt>
+              <dd className="mt-1 select-all break-all rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-xs leading-5 text-slate-200">
+                {createdDevice.name}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">ID</dt>
+              <dd className="mt-1 select-all break-all rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-xs leading-5 text-slate-200">
+                {createdDevice.id}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Key</dt>
+              <dd className="mt-1 select-all break-all rounded-lg border border-amber-400/20 bg-slate-950 px-3 py-2 font-mono text-xs leading-5 text-amber-100">
+                {createdDevice.key}
+              </dd>
+            </div>
           </dl>
-          <button type="button" onClick={() => void copyValue(createdDevice.id, "ID")}>
-            Copy ID
-          </button>
-          <button type="button" onClick={() => void copyValue(createdDevice.key, "key")}>
-            Copy key
-          </button>
-          <button type="button" onClick={dismissCredentials}>Dismiss</button>
-          {clipboardStatus?.kind === "success" && <p role="status">{clipboardStatus.message}</p>}
-          {clipboardStatus?.kind === "error" && <p role="alert">{clipboardStatus.message}</p>}
-        </section>
+          <div className="mt-4 grid grid-cols-2 gap-2">
+            <Button appearance="secondary" onClick={() => void copyValue(createdDevice.id, "ID")}>
+              Copy ID
+            </Button>
+            <Button appearance="secondary" onClick={() => void copyValue(createdDevice.key, "key")}>
+              Copy key
+            </Button>
+            <Button appearance="danger" className="col-span-2" onClick={dismissCredentials}>Dismiss</Button>
+          </div>
+          {clipboardStatus?.kind === "success" && (
+            <p className="mt-3 rounded-lg border border-teal-400/25 bg-teal-400/10 px-3 py-2 text-sm text-teal-200" role="status">
+              {clipboardStatus.message}
+            </p>
+          )}
+          {clipboardStatus?.kind === "error" && (
+            <p className="mt-3 rounded-lg border border-red-400/25 bg-red-500/10 px-3 py-2 text-sm text-red-200" role="alert">
+              {clipboardStatus.message}
+            </p>
+          )}
+        </Panel>
       )}
-    </section>
+    </Panel>
   );
 }
