@@ -96,11 +96,14 @@ function currentProvisioningProps(): DeviceProvisioningProps {
   return provisioning.props!;
 }
 
-async function logIn() {
-  fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "reader" } });
-  fireEvent.change(screen.getByLabelText(/password/i), { target: { value: "password" } });
+function submitLoginForm(username = "reader", password = "password") {
+  fireEvent.change(screen.getByLabelText(/username/i), { target: { value: username } });
+  fireEvent.change(screen.getByLabelText(/password/i), { target: { value: password } });
   fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+}
 
+async function logIn() {
+  submitLoginForm();
   await screen.findByRole("option", { name: /Boiler/ });
 }
 
@@ -222,6 +225,32 @@ describe("App", () => {
     expect(screen.queryByLabelText(/selected device/i)).not.toBeInTheDocument();
   });
 
+  it("prioritizes a late restored-session 401 over an earlier transient prerequisite failure", async () => {
+    const currentUser = deferred<{ can_add_devices: boolean }>();
+    session.restoreAccessToken.mockReturnValue("restored-token");
+    api.listDevices.mockRejectedValue(new Error("Device service temporarily unavailable"));
+    api.getCurrentUser.mockReturnValue(currentUser.promise);
+    render(<App />);
+
+    await waitFor(() => {
+      expect(api.listDevices).toHaveBeenCalledWith("restored-token");
+      expect(api.getCurrentUser).toHaveBeenCalledWith("restored-token");
+    });
+    await act(async () => Promise.resolve());
+    expect(screen.queryByRole("button", { name: /sign in/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(session.clearAccessToken).not.toHaveBeenCalled();
+
+    await act(async () => {
+      currentUser.reject(new api.ApiError(401));
+      await currentUser.promise.catch(() => undefined);
+    });
+
+    expect(await screen.findByRole("button", { name: /sign in/i })).toBeInTheDocument();
+    expect(session.clearAccessToken).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it.each(["devices", "capability"] as const)("clears an interactive session when %s returns 401", async (request) => {
     if (request === "devices") {
       api.listDevices.mockRejectedValue(new api.ApiError(401));
@@ -238,6 +267,70 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: /sign in/i })).toBeInTheDocument();
     expect(session.storeAccessToken).not.toHaveBeenCalled();
     expect(screen.queryByLabelText(/selected device/i)).not.toBeInTheDocument();
+  });
+
+  it("prioritizes a late post-login 401 over an earlier transient prerequisite failure", async () => {
+    const currentUser = deferred<{ can_add_devices: boolean }>();
+    api.listDevices.mockRejectedValue(new Error("Device service temporarily unavailable"));
+    api.getCurrentUser.mockReturnValue(currentUser.promise);
+    render(<App />);
+
+    submitLoginForm();
+    await waitFor(() => {
+      expect(api.listDevices).toHaveBeenCalledWith("access-token");
+      expect(api.getCurrentUser).toHaveBeenCalledWith("access-token");
+    });
+    await act(async () => Promise.resolve());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(session.clearAccessToken).not.toHaveBeenCalled();
+    expect(session.storeAccessToken).not.toHaveBeenCalled();
+
+    await act(async () => {
+      currentUser.reject(new api.ApiError(401));
+      await currentUser.promise.catch(() => undefined);
+    });
+
+    await waitFor(() => expect(session.clearAccessToken).toHaveBeenCalledOnce());
+    expect(screen.getByRole("button", { name: /sign in/i })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(session.storeAccessToken).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText(/selected device/i)).not.toBeInTheDocument();
+  });
+
+  it("reports invalid credentials without invoking the authenticated logout reset", async () => {
+    api.login.mockRejectedValue(new api.ApiError(401));
+    render(<App />);
+
+    submitLoginForm("unknown", "wrong-password");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("API error: Request failed with status 401");
+    expect(screen.getByRole("button", { name: /sign in/i })).toBeInTheDocument();
+    expect(session.clearAccessToken).not.toHaveBeenCalled();
+    expect(api.listDevices).not.toHaveBeenCalled();
+    expect(api.getCurrentUser).not.toHaveBeenCalled();
+  });
+
+  it("ignores an older attempt's late prerequisite 401 after a newer login succeeds", async () => {
+    const olderCapability = deferred<{ can_add_devices: boolean }>();
+    api.login.mockResolvedValueOnce("older-token").mockResolvedValueOnce("newer-token");
+    api.getCurrentUser.mockReturnValueOnce(olderCapability.promise);
+    render(<App />);
+
+    submitLoginForm("older-user");
+    await waitFor(() => expect(api.getCurrentUser).toHaveBeenCalledWith("older-token"));
+    submitLoginForm("newer-user");
+    expect(await screen.findByRole("option", { name: /Boiler/ })).toBeInTheDocument();
+    expect(provisioning.props).toMatchObject({ accessToken: "newer-token" });
+
+    await act(async () => {
+      olderCapability.reject(new api.ApiError(401));
+      await olderCapability.promise.catch(() => undefined);
+    });
+
+    expect(screen.getByLabelText(/selected device/i)).toBeInTheDocument();
+    expect(provisioning.props).toMatchObject({ accessToken: "newer-token" });
+    expect(session.storeAccessToken).toHaveBeenLastCalledWith("newer-token");
+    expect(session.clearAccessToken).not.toHaveBeenCalled();
   });
 
   it("does not commit an interactive-login token when capability loading fails transiently", async () => {

@@ -35,6 +35,30 @@ function appendUniqueRows(rows: Measurement[], additions: Measurement[]): Measur
     .slice(0, PAGE_SIZE);
 }
 
+async function loadAuthenticatedPrerequisites(token: string): Promise<[Device[], CurrentUser]> {
+  const results = await Promise.allSettled([
+    listDevices(token),
+    getCurrentUser(token),
+  ]);
+  const authenticationFailure = results.find((result) => (
+    result.status === "rejected"
+    && result.reason instanceof ApiError
+    && (result.reason.status === 401 || result.reason.status === 403)
+  ));
+  if (authenticationFailure?.status === "rejected") {
+    throw authenticationFailure.reason;
+  }
+
+  const [devicesResult, currentUserResult] = results;
+  if (devicesResult.status === "rejected") {
+    throw devicesResult.reason;
+  }
+  if (currentUserResult.status === "rejected") {
+    throw currentUserResult.reason;
+  }
+  return [devicesResult.value, currentUserResult.value];
+}
+
 export default function App() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -49,6 +73,7 @@ export default function App() {
   const selectionGeneration = useRef(0);
   const deviceListRequestGeneration = useRef(0);
   const authenticationGeneration = useRef(0);
+  const loginAttemptGeneration = useRef(0);
   const selectedDeviceIdRef = useRef("");
 
   const logout = useCallback(() => {
@@ -56,6 +81,7 @@ export default function App() {
     selectionGeneration.current += 1;
     deviceListRequestGeneration.current += 1;
     authenticationGeneration.current += 1;
+    loginAttemptGeneration.current += 1;
     selectedDeviceIdRef.current = "";
     setAccessToken(null);
     setDevices([]);
@@ -117,10 +143,7 @@ export default function App() {
     }
 
     let disposed = false;
-    void Promise.all([
-      listDevices(restoredToken),
-      getCurrentUser(restoredToken),
-    ]).then(([listedDevices, currentUser]: [Device[], CurrentUser]) => {
+    void loadAuthenticatedPrerequisites(restoredToken).then(([listedDevices, currentUser]) => {
       if (!disposed) {
         setDevices(listedDevices);
         setCanAddDevices(currentUser.can_add_devices);
@@ -151,13 +174,41 @@ export default function App() {
 
   async function submitLogin(event: any) {
     event.preventDefault();
+    const attemptGeneration = ++loginAttemptGeneration.current;
     setApiError(null);
+    let token: string;
     try {
-      const token = await login(username, password);
-      const [listedDevices, currentUser]: [Device[], CurrentUser] = await Promise.all([
-        listDevices(token),
-        getCurrentUser(token),
-      ]);
+      token = await login(username, password);
+    } catch (error) {
+      if (loginAttemptGeneration.current === attemptGeneration) {
+        setApiError(error instanceof Error ? error.message : "Login failed");
+      }
+      return;
+    }
+    if (loginAttemptGeneration.current !== attemptGeneration) {
+      return;
+    }
+
+    let listedDevices: Device[];
+    let currentUser: CurrentUser;
+    try {
+      [listedDevices, currentUser] = await loadAuthenticatedPrerequisites(token);
+    } catch (error) {
+      if (loginAttemptGeneration.current !== attemptGeneration) {
+        return;
+      }
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        logout();
+        return;
+      }
+      setApiError(error instanceof Error ? error.message : "Login failed");
+      return;
+    }
+    if (loginAttemptGeneration.current !== attemptGeneration) {
+      return;
+    }
+
+    try {
       storeAccessToken(token);
       authenticationGeneration.current += 1;
       setAccessToken(token);
@@ -167,11 +218,9 @@ export default function App() {
       setDeviceId("");
       setMeasurementState(EMPTY_STATE);
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        logout();
-        return;
+      if (loginAttemptGeneration.current === attemptGeneration) {
+        setApiError(error instanceof Error ? error.message : "Login failed");
       }
-      setApiError(error instanceof Error ? error.message : "Login failed");
     }
   }
 
