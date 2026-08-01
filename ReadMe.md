@@ -167,9 +167,9 @@ over HTTP.
 
 In React, select the device to see its latest measurement and its current
 history page. Live NATS notifications update the latest value immediately and
-schedule a debounced authoritative refresh of the displayed history page. The
-refresh replaces its rows and updated page total; gaps or reconnects are
-recovered from the Django API.
+schedule a debounced authoritative refresh after 250 ms of quiet for the
+displayed history page. The refresh replaces its rows and updated page total;
+gaps or reconnects are recovered from the Django API.
 
 ## Verification
 

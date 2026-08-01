@@ -62,6 +62,7 @@ grep -Fq 'The hidden prompt keeps the per-device key out of shell history and th
 ! grep -Fq 'storing provisioned values in `.env` avoids exposing real credentials' ReadMe.md
 grep -Fq 'debounced authoritative refresh' ReadMe.md
 grep -Fq 'updated page total' ReadMe.md
+grep -Fq '250 ms' ReadMe.md
 grep -qx 'nats-keys' .gitignore
 grep -qx 'nats-keys' .dockerignore
 test ! -e setup-nkey.sh
