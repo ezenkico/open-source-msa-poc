@@ -13,36 +13,72 @@ function measurement(entry_index: number): Measurement {
 }
 
 describe("mergeNotification", () => {
-  it("updates latest but freezes a full table", () => {
+  it.each([
+    ["full ascending", [measurement(1), measurement(2)], 2],
+    ["partial ascending", [measurement(1), measurement(2)], 3],
+    ["full descending", [measurement(2), measurement(1)], 2],
+    ["partial descending", [measurement(2), measurement(1)], 3],
+  ])("updates latest without rewriting a %s page", (_case, rows, capacity) => {
     const result = mergeNotification(
-      { latest: measurement(2), rows: [measurement(1), measurement(2)], missingRange: null },
+      { latest: measurement(2), rows, missingRange: null },
       measurement(3),
-      2,
+      capacity,
     );
 
     expect(result.latest?.entry_index).toBe(3);
-    expect(result.rows.map((row) => row.entry_index)).toEqual([1, 2]);
+    expect(result.rows).toBe(rows);
     expect(result.missingRange).toBeNull();
   });
 
-  it("appends a contiguous notification when capacity remains", () => {
+  it.each([
+    ["full ascending", [measurement(1), measurement(2)], 2],
+    ["partial ascending", [measurement(1), measurement(2)], 3],
+    ["full descending", [measurement(2), measurement(1)], 2],
+    ["partial descending", [measurement(2), measurement(1)], 3],
+  ])("detects a notification gap without rewriting a %s page", (_case, rows, capacity) => {
     const result = mergeNotification(
-      { latest: measurement(1), rows: [measurement(1)], missingRange: null },
-      measurement(2),
-      3,
+      { latest: measurement(2), rows, missingRange: null },
+      measurement(5),
+      capacity,
     );
 
-    expect(result.rows.map((row) => row.entry_index)).toEqual([1, 2]);
+    expect(result.latest?.entry_index).toBe(5);
+    expect(result.rows).toBe(rows);
+    expect(result.missingRange).toEqual({ afterIndex: 2, throughIndex: 5 });
   });
 
-  it("requests an exclusive/inclusive range for a gap", () => {
+  it("retains an outstanding missing range across later contiguous notifications", () => {
+    const rows = [measurement(2), measurement(1)];
     const result = mergeNotification(
-      { latest: measurement(2), rows: [measurement(1), measurement(2)], missingRange: null },
-      measurement(5),
-      10,
+      {
+        latest: measurement(5),
+        rows,
+        missingRange: { afterIndex: 2, throughIndex: 5 },
+      },
+      measurement(6),
+      50,
     );
 
+    expect(result.latest?.entry_index).toBe(6);
+    expect(result.rows).toBe(rows);
     expect(result.missingRange).toEqual({ afterIndex: 2, throughIndex: 5 });
+  });
+
+  it("extends an outstanding missing range when another notification gap arrives", () => {
+    const rows = [measurement(2), measurement(1)];
+    const result = mergeNotification(
+      {
+        latest: measurement(5),
+        rows,
+        missingRange: { afterIndex: 2, throughIndex: 5 },
+      },
+      measurement(8),
+      50,
+    );
+
+    expect(result.latest?.entry_index).toBe(8);
+    expect(result.rows).toBe(rows);
+    expect(result.missingRange).toEqual({ afterIndex: 2, throughIndex: 8 });
   });
 
   it("ignores duplicate and older notifications so latest never regresses", () => {

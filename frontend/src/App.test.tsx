@@ -732,7 +732,7 @@ describe("App", () => {
     await waitFor(() => expect(closeDeviceCreations).toHaveBeenCalledOnce());
   });
 
-  it("logs in, lists devices, and loads authoritative state for the selected device", async () => {
+  it("logs in, lists devices, and loads the first descending measurement page", async () => {
     render(<App />);
     await logInAndSelect();
 
@@ -740,13 +740,151 @@ describe("App", () => {
       expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature");
     });
     expect(api.login).toHaveBeenCalledWith("reader", "password");
-    expect(api.getMeasurements).toHaveBeenCalledWith(DEVICE_ONE.id, "access-token", `limit=${PAGE_SIZE}`);
+    expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=0&order=desc`,
+    );
     expect(screen.getAllByRole("row")).toHaveLength(3);
   });
 
-  it("updates latest but leaves a full table unchanged", async () => {
+  it("uses authoritative metadata for numeric page controls and requests adjacent offsets", async () => {
+    const firstPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
+    const secondPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(70 - index));
+    api.getMeasurements.mockImplementation(async (_deviceId, _token, query) => (
+      query === `limit=${PAGE_SIZE}&offset=50&order=desc`
+        ? measurementPage(secondPageRows, { total: 120, offset: 50 })
+        : measurementPage(firstPageRows, { total: 120 })
+    ));
+    render(<App />);
+    await logInAndSelect();
+
+    expect(await screen.findByText("Page 1 of 3")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^previous$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^next$/i })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /^next$/i }));
+
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=50&order=desc`,
+    ));
+    expect(await screen.findByText("Page 2 of 3")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^previous$/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^next$/i })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /^previous$/i }));
+
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenLastCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=0&order=desc`,
+    ));
+    expect(await screen.findByText("Page 1 of 3")).toBeInTheDocument();
+  });
+
+  it("disables Next at the authoritative last-page boundary regardless of entry indexes", async () => {
+    api.getMeasurements.mockResolvedValue(measurementPage(
+      Array.from({ length: 20 }, (_, index) => measurement(121 - index)),
+      { total: 120, offset: 100 },
+    ));
+    render(<App />);
+    await logInAndSelect();
+
+    expect(await screen.findByText("Page 3 of 3")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^previous$/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^next$/i })).toBeDisabled();
+  });
+
+  it("renders an empty authoritative result as a single disabled page", async () => {
+    api.getLatest.mockResolvedValue(null);
+    api.getMeasurements.mockResolvedValue(measurementPage([], { total: 0 }));
+    render(<App />);
+    await logInAndSelect();
+
+    expect(await screen.findByText("Page 1 of 1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^previous$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^next$/i })).toBeDisabled();
+  });
+
+  it("disables both page controls while an adjacent page request is pending", async () => {
+    const pendingPage = deferred<MeasurementPage>();
+    const firstPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
+    api.getMeasurements
+      .mockResolvedValueOnce(measurementPage(firstPageRows, { total: 120 }))
+      .mockReturnValueOnce(pendingPage.promise);
+    render(<App />);
+    await logInAndSelect();
+    await screen.findByText("Page 1 of 3");
+
+    fireEvent.click(screen.getByRole("button", { name: /^next$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^previous$/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /^next$/i })).toBeDisabled();
+    });
+    expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+  });
+
+  it("resets ordering and device changes to offset zero and reconnects at the current selection", async () => {
+    api.getMeasurements.mockImplementation(async (requestedDeviceId, _token, query) => {
+      const requestedOrder = query.endsWith("order=asc") ? "asc" : "desc";
+      const requestedOffset = query.includes("offset=50") ? 50 : 0;
+      const firstIndex = requestedDeviceId === DEVICE_TWO.id ? 220 : 120;
+      return measurementPage(
+        Array.from({ length: PAGE_SIZE }, (_, index) => measurement(firstIndex - index, requestedDeviceId)),
+        { total: 120, offset: requestedOffset, order: requestedOrder },
+      );
+    });
+    render(<App />);
+    await logInAndSelect();
+    await screen.findByText("Page 1 of 3");
+
+    const ordering = screen.getByLabelText(/measurement order/i);
+    expect(ordering).toHaveValue("desc");
+    expect(screen.getByRole("option", { name: "Newest first" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Oldest first" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^next$/i }));
+    expect(await screen.findByText("Page 2 of 3")).toBeInTheDocument();
+    fireEvent.change(ordering, { target: { value: "asc" } });
+
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=0&order=asc`,
+    ));
+    expect(await screen.findByText("Page 1 of 3")).toBeInTheDocument();
+
+    api.getMeasurements.mockClear();
+    fireEvent.change(screen.getByLabelText(/selected device/i), { target: { value: DEVICE_TWO.id } });
+
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_TWO.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=0&order=asc`,
+    ));
+    expect(screen.getByLabelText(/measurement order/i)).toHaveValue("asc");
+    fireEvent.click(await screen.findByRole("button", { name: /^next$/i }));
+    expect(await screen.findByText("Page 2 of 3")).toBeInTheDocument();
+
+    api.getMeasurements.mockClear();
+    api.getLatest.mockClear();
+    act(() => reconnect());
+
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_TWO.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=50&order=asc`,
+    ));
+    expect(api.getLatest).toHaveBeenCalledWith(DEVICE_TWO.id, "access-token");
+  });
+
+  it("updates latest but leaves a full displayed page unchanged", async () => {
     api.getMeasurements.mockResolvedValue(measurementPage(
       Array.from({ length: PAGE_SIZE }, (_, index) => measurement(index + 1)),
+      { total: PAGE_SIZE },
     ));
     api.getLatest.mockResolvedValue(measurement(PAGE_SIZE));
     render(<App />);
@@ -761,7 +899,12 @@ describe("App", () => {
     expect(screen.getAllByRole("row")).toHaveLength(PAGE_SIZE + 1);
   });
 
-  it("fetches the documented exclusive/inclusive range after a notification gap", async () => {
+  it("consumes gap recovery without rewriting the displayed page", async () => {
+    api.getMeasurements.mockImplementation(async (_deviceId, _token, query) => (
+      query.startsWith("after_index")
+        ? measurementPage([measurement(3), measurement(4), measurement(5)], { order: "asc" })
+        : measurementPage([measurement(2), measurement(1)], { total: 2 })
+    ));
     render(<App />);
     await logInAndSelect();
     await waitFor(() => expect(nats.subscribeToMeasurements).toHaveBeenCalledOnce());
@@ -775,6 +918,59 @@ describe("App", () => {
         `after_index=2&through_index=5&limit=${PAGE_SIZE}`,
       );
     });
+    await waitFor(() => expect(screen.getAllByRole("row")).toHaveLength(3));
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("2");
+    expect(screen.getAllByRole("row")[2]).toHaveTextContent("1");
+  });
+
+  it("does not let a page success erase a live missing range", async () => {
+    const nextPage = deferred<MeasurementPage>();
+    const gapRecovery = deferred<MeasurementPage>();
+    api.getLatest.mockResolvedValue(measurement(50));
+    api.getMeasurements.mockImplementation((_deviceId, _token, query) => {
+      if (query === `limit=${PAGE_SIZE}&offset=50&order=desc`) {
+        return nextPage.promise;
+      }
+      if (query.startsWith("after_index")) {
+        return gapRecovery.promise;
+      }
+      return Promise.resolve(measurementPage(
+        Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index)),
+        { total: 120 },
+      ));
+    });
+    render(<App />);
+    await logInAndSelect();
+    await screen.findByText("Page 1 of 3");
+
+    fireEvent.click(screen.getByRole("button", { name: /^next$/i }));
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=50&order=desc`,
+    ));
+    act(() => notification(measurement(55)));
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `after_index=50&through_index=55&limit=${PAGE_SIZE}`,
+    ));
+
+    await act(async () => {
+      nextPage.resolve(measurementPage(
+        Array.from({ length: PAGE_SIZE }, (_, index) => measurement(70 - index)),
+        { total: 120, offset: 50 },
+      ));
+      await nextPage.promise;
+    });
+    await screen.findByText("Page 2 of 3");
+    act(() => notification(measurement(58)));
+
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `after_index=50&through_index=58&limit=${PAGE_SIZE}`,
+    ));
   });
 
   it("does not miss a notification while the initial authoritative read is pending", async () => {
@@ -796,10 +992,10 @@ describe("App", () => {
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("3");
     });
-    expect(screen.getAllByRole("row")).toHaveLength(4);
+    expect(screen.getAllByRole("row")).toHaveLength(3);
   });
 
-  it("closes the old subscription on device changes and reloads on reconnect", async () => {
+  it("closes the old subscription on device changes", async () => {
     render(<App />);
     await logInAndSelect();
     await waitFor(() => expect(nats.subscribeToMeasurements).toHaveBeenCalledOnce());
@@ -813,31 +1009,40 @@ describe("App", () => {
       expect.any(Function),
       expect.any(Function),
     ));
-
-    reconnect();
-    await waitFor(() => {
-      expect(api.getLatest).toHaveBeenCalledTimes(3);
-      expect(api.getMeasurements).toHaveBeenCalledTimes(3);
-    });
   });
 
-  it("loads the previous page using the first displayed index", async () => {
-    api.getLatest.mockResolvedValue(measurement(4));
-    api.getMeasurements.mockImplementation(async (_deviceId, _token, query) => measurementPage(
-      query.startsWith("before_index") ? [measurement(1), measurement(2)] : [measurement(3), measurement(4)],
-    ));
+  it("ignores an older page success after a newer ordering selection", async () => {
+    const stalePage = deferred<MeasurementPage>();
+    const firstPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
+    api.getMeasurements.mockImplementation((_deviceId, _token, query) => {
+      if (query === `limit=${PAGE_SIZE}&offset=50&order=desc`) {
+        return stalePage.promise;
+      }
+      if (query === `limit=${PAGE_SIZE}&offset=0&order=asc`) {
+        return Promise.resolve(measurementPage([measurement(900)], { total: 1, order: "asc" }));
+      }
+      return Promise.resolve(measurementPage(firstPageRows, { total: 120 }));
+    });
     render(<App />);
     await logInAndSelect();
-    await waitFor(() => expect(screen.getAllByRole("row")).toHaveLength(3));
+    await screen.findByText("Page 1 of 3");
 
-    fireEvent.click(screen.getByRole("button", { name: /previous page/i }));
-
+    fireEvent.click(screen.getByRole("button", { name: /^next$/i }));
     await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
       DEVICE_ONE.id,
       "access-token",
-      `before_index=3&limit=${PAGE_SIZE}`,
+      `limit=${PAGE_SIZE}&offset=50&order=desc`,
     ));
-    expect(screen.getAllByRole("row")[1]).toHaveTextContent("1");
+    fireEvent.change(screen.getByLabelText(/measurement order/i), { target: { value: "asc" } });
+    await waitFor(() => expect(screen.getAllByRole("row")[1]).toHaveTextContent("900"));
+
+    await act(async () => {
+      stalePage.resolve(measurementPage([measurement(777)], { total: 120, offset: 50 }));
+      await stalePage.promise;
+    });
+
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("900");
+    expect(screen.getByText("Page 1 of 1")).toBeInTheDocument();
   });
 
   it("does not commit a stale initial A response after selecting B", async () => {
@@ -905,38 +1110,109 @@ describe("App", () => {
     await waitFor(() => expect(screen.getAllByRole("row")).toHaveLength(2));
   });
 
-  it("does not replace B with a stale A previous page", async () => {
+  it("ignores an older page failure after selecting a newer device", async () => {
     const stalePage = deferred<MeasurementPage>();
+    const firstPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
     api.getLatest.mockImplementation((deviceId: string) => Promise.resolve(
-      deviceId === DEVICE_ONE.id ? measurement(5) : measurement(20, DEVICE_TWO.id),
+      deviceId === DEVICE_ONE.id ? measurement(120) : measurement(20, DEVICE_TWO.id),
     ));
     api.getMeasurements.mockImplementation((deviceId: string, _token: string, query: string) => {
-      if (deviceId === DEVICE_ONE.id && query.startsWith("before_index")) {
+      if (deviceId === DEVICE_ONE.id && query === `limit=${PAGE_SIZE}&offset=50&order=desc`) {
         return stalePage.promise;
       }
       return Promise.resolve(measurementPage(deviceId === DEVICE_ONE.id
-        ? [measurement(5), measurement(6)]
-        : [measurement(20, DEVICE_TWO.id)]));
+        ? firstPageRows
+        : [measurement(20, DEVICE_TWO.id)], { total: deviceId === DEVICE_ONE.id ? 120 : 1 }));
     });
     render(<App />);
     await logInAndSelect();
-    await waitFor(() => expect(screen.getAllByRole("row")).toHaveLength(3));
+    await screen.findByText("Page 1 of 3");
 
-    fireEvent.click(screen.getByRole("button", { name: /previous page/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^next$/i }));
     await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
       DEVICE_ONE.id,
       "access-token",
-      `before_index=5&limit=${PAGE_SIZE}`,
+      `limit=${PAGE_SIZE}&offset=50&order=desc`,
     ));
     fireEvent.change(screen.getByLabelText(/selected device/i), { target: { value: DEVICE_TWO.id } });
     await waitFor(() => expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("20"));
 
     await act(async () => {
-      stalePage.resolve(measurementPage([measurement(3), measurement(4)]));
-      await stalePage.promise;
+      stalePage.reject(new Error("stale page failed"));
+      await stalePage.promise.catch(() => undefined);
     });
 
     await waitFor(() => expect(screen.getAllByRole("row")).toHaveLength(2));
+    expect(screen.queryByText(/stale page failed/i)).not.toBeInTheDocument();
+  });
+
+  it("retains the last successful page and reports a current page failure", async () => {
+    const failedPage = deferred<MeasurementPage>();
+    const firstPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
+    api.getMeasurements
+      .mockResolvedValueOnce(measurementPage(firstPageRows, { total: 120 }))
+      .mockReturnValueOnce(failedPage.promise);
+    render(<App />);
+    await logInAndSelect();
+    await screen.findByText("Page 1 of 3");
+
+    fireEvent.click(screen.getByRole("button", { name: /^next$/i }));
+    await act(async () => {
+      failedPage.reject(new Error("measurement page unavailable"));
+      await failedPage.promise.catch(() => undefined);
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("API error: measurement page unavailable");
+    expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+    expect(screen.getAllByRole("row")).toHaveLength(PAGE_SIZE + 1);
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("120");
+  });
+
+  it("corrects an empty out-of-range page exactly once without committing it", async () => {
+    const correctedPage = deferred<MeasurementPage>();
+    const firstPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
+    let offsetZeroRequests = 0;
+    api.getMeasurements.mockImplementation((_deviceId, _token, query) => {
+      if (query === `limit=${PAGE_SIZE}&offset=50&order=desc`) {
+        return Promise.resolve(measurementPage([], { total: 20, offset: 50 }));
+      }
+      offsetZeroRequests += 1;
+      return offsetZeroRequests === 1
+        ? Promise.resolve(measurementPage(firstPageRows, { total: 120 }))
+        : correctedPage.promise;
+    });
+    render(<App />);
+    await logInAndSelect();
+    await screen.findByText("Page 1 of 3");
+    api.getMeasurements.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: /^next$/i }));
+
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledTimes(2));
+    expect(api.getMeasurements).toHaveBeenNthCalledWith(
+      1,
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=50&order=desc`,
+    );
+    expect(api.getMeasurements).toHaveBeenNthCalledWith(
+      2,
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=0&order=desc`,
+    );
+    expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+    expect(screen.getAllByRole("row")).toHaveLength(PAGE_SIZE + 1);
+
+    await act(async () => {
+      correctedPage.resolve(measurementPage([measurement(20)], { total: 20 }));
+      await correctedPage.promise;
+    });
+
+    expect(await screen.findByText("Page 1 of 1")).toBeInTheDocument();
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("20");
+    expect(api.getMeasurements).toHaveBeenCalledTimes(2);
   });
 
   it("closes and ignores a late A subscription after selecting B", async () => {

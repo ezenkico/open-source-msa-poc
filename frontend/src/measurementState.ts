@@ -21,35 +21,23 @@ export type MeasurementState = {
 export function mergeNotification(
   state: MeasurementState,
   notification: Measurement,
-  capacity: number,
+  _capacity: number,
 ): MeasurementState {
   if (state.latest && notification.entry_index <= state.latest.entry_index) {
     return state;
   }
 
-  if (state.rows.length >= capacity) {
-    return { ...state, latest: notification, missingRange: null };
-  }
-
-  const lastIndex = state.rows.at(-1)?.entry_index ?? 0;
-  if (notification.entry_index === lastIndex + 1) {
-    return {
-      latest: notification,
-      rows: [...state.rows, notification],
-      missingRange: null,
-    };
-  }
-
-  if (notification.entry_index > lastIndex + 1) {
+  const latestIndex = state.latest?.entry_index;
+  if (latestIndex !== undefined && notification.entry_index > latestIndex + 1) {
     return {
       ...state,
       latest: notification,
       missingRange: {
-        afterIndex: lastIndex,
+        afterIndex: state.missingRange?.afterIndex ?? latestIndex,
         throughIndex: notification.entry_index,
       },
     };
   }
 
-  return { ...state, latest: notification, missingRange: null };
+  return { ...state, latest: notification };
 }

@@ -10,6 +10,8 @@ import {
   type CreatedDevice,
   type CurrentUser,
   type Device,
+  type MeasurementOrder,
+  type MeasurementPage,
 } from "./api";
 import DeviceProvisioning from "./DeviceProvisioning";
 import { subscribeToDeviceCreations, subscribeToMeasurements } from "./nats";
@@ -26,13 +28,6 @@ const EMPTY_STATE: MeasurementState = { latest: null, rows: [], missingRange: nu
 
 function formatTime(timestamp: string): string {
   return new Date(timestamp).toLocaleString();
-}
-
-function appendUniqueRows(rows: Measurement[], additions: Measurement[]): Measurement[] {
-  const indexes = new Set(rows.map((row) => row.entry_index));
-  return [...rows, ...additions.filter((row) => !indexes.has(row.entry_index))]
-    .sort((left, right) => left.entry_index - right.entry_index)
-    .slice(0, PAGE_SIZE);
 }
 
 async function loadAuthenticatedPrerequisites(token: string): Promise<[Device[], CurrentUser]> {
@@ -68,27 +63,113 @@ export default function App() {
   const [canAddDevices, setCanAddDevices] = useState(false);
   const [deviceId, setDeviceId] = useState("");
   const [measurementState, setMeasurementState] = useState<MeasurementState>(EMPTY_STATE);
+  const [offset, setOffset] = useState(0);
+  const [order, setOrder] = useState<MeasurementOrder>("desc");
+  const [measurementPage, setMeasurementPage] = useState<MeasurementPage | null>(null);
+  const [isPageLoading, setIsPageLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const selectionGeneration = useRef(0);
+  const pageRequestGeneration = useRef(0);
   const deviceListRequestGeneration = useRef(0);
   const authenticationGeneration = useRef(0);
   const loginAttemptGeneration = useRef(0);
   const selectedDeviceIdRef = useRef("");
+  const offsetRef = useRef(0);
+  const orderRef = useRef<MeasurementOrder>("desc");
 
   const logout = useCallback(() => {
     clearAccessToken();
     selectionGeneration.current += 1;
+    pageRequestGeneration.current += 1;
     deviceListRequestGeneration.current += 1;
     authenticationGeneration.current += 1;
     loginAttemptGeneration.current += 1;
     selectedDeviceIdRef.current = "";
+    offsetRef.current = 0;
+    orderRef.current = "desc";
     setAccessToken(null);
     setDevices([]);
     setCanAddDevices(false);
     setDeviceId("");
     setMeasurementState(EMPTY_STATE);
+    setOffset(0);
+    setOrder("desc");
+    setMeasurementPage(null);
+    setIsPageLoading(false);
     setConnectionError(null);
+  }, []);
+
+  const loadMeasurementPage = useCallback(async (
+    selectedDeviceId: string,
+    token: string,
+    requestedOffset: number,
+    requestedOrder: MeasurementOrder,
+    selectedGeneration: number,
+  ): Promise<MeasurementPage | null> => {
+    async function requestPage(targetOffset: number, correctionAttempted: boolean): Promise<MeasurementPage | null> {
+      const requestGeneration = ++pageRequestGeneration.current;
+      offsetRef.current = targetOffset;
+      setOffset(targetOffset);
+      setIsPageLoading(true);
+      setApiError(null);
+
+      const isCurrentRequest = () => (
+        selectionGeneration.current === selectedGeneration
+        && selectedDeviceIdRef.current === selectedDeviceId
+        && pageRequestGeneration.current === requestGeneration
+        && offsetRef.current === targetOffset
+        && orderRef.current === requestedOrder
+      );
+
+      try {
+        const page = await getMeasurements(
+          selectedDeviceId,
+          token,
+          `limit=${PAGE_SIZE}&offset=${targetOffset}&order=${requestedOrder}`,
+        );
+        if (!isCurrentRequest()) {
+          return null;
+        }
+
+        if (
+          !correctionAttempted
+          && page.results.length === 0
+          && page.total > 0
+          && page.offset >= page.total
+        ) {
+          const lastValidOffset = Math.floor((page.total - 1) / page.limit) * page.limit;
+          if (lastValidOffset !== targetOffset) {
+            return requestPage(lastValidOffset, true);
+          }
+        }
+
+        offsetRef.current = page.offset;
+        setOffset(page.offset);
+        setMeasurementPage(page);
+        setMeasurementState((current) => ({
+          ...current,
+          rows: page.results,
+        }));
+        setApiError(null);
+        return page;
+      } catch (error) {
+        if (isCurrentRequest()) {
+          setApiError(error instanceof Error ? error.message : "Could not load measurements");
+        }
+        return null;
+      } finally {
+        if (
+          selectionGeneration.current === selectedGeneration
+          && selectedDeviceIdRef.current === selectedDeviceId
+          && pageRequestGeneration.current === requestGeneration
+        ) {
+          setIsPageLoading(false);
+        }
+      }
+    }
+
+    return requestPage(requestedOffset, false);
   }, []);
 
   const refreshDevices = useCallback(async (token: string, authGeneration: number) => {
@@ -105,9 +186,14 @@ export default function App() {
       setApiError(null);
       if (selectedDeviceIdRef.current && !listedDevices.some((device) => device.id === selectedDeviceIdRef.current)) {
         selectionGeneration.current += 1;
+        pageRequestGeneration.current += 1;
         selectedDeviceIdRef.current = "";
+        offsetRef.current = 0;
         setDeviceId("");
         setMeasurementState(EMPTY_STATE);
+        setOffset(0);
+        setMeasurementPage(null);
+        setIsPageLoading(false);
         setConnectionError(null);
       }
     } catch (error) {
@@ -127,14 +213,6 @@ export default function App() {
     }
   }, [logout]);
 
-  const loadAuthoritativeState = useCallback(async (selectedDeviceId: string, token: string) => {
-    const [latest, page] = await Promise.all([
-      getLatest(selectedDeviceId, token),
-      getMeasurements(selectedDeviceId, token, `limit=${PAGE_SIZE}`),
-    ]);
-    return { latest, rows: page.results, missingRange: null };
-  }, []);
-
   useEffect(() => {
     const restoredToken = restoreAccessToken();
     if (!restoredToken) {
@@ -150,7 +228,12 @@ export default function App() {
         authenticationGeneration.current += 1;
         setAccessToken(restoredToken);
         selectedDeviceIdRef.current = "";
+        offsetRef.current = 0;
         setDeviceId("");
+        setMeasurementState(EMPTY_STATE);
+        setOffset(0);
+        setMeasurementPage(null);
+        setIsPageLoading(false);
       }
     }).catch((error: unknown) => {
       if (disposed) {
@@ -215,8 +298,13 @@ export default function App() {
       setDevices(listedDevices);
       setCanAddDevices(currentUser.can_add_devices);
       selectedDeviceIdRef.current = "";
+      offsetRef.current = 0;
+      pageRequestGeneration.current += 1;
       setDeviceId("");
       setMeasurementState(EMPTY_STATE);
+      setOffset(0);
+      setMeasurementPage(null);
+      setIsPageLoading(false);
     } catch (error) {
       if (loginAttemptGeneration.current === attemptGeneration) {
         setApiError(error instanceof Error ? error.message : "Login failed");
@@ -250,11 +338,16 @@ export default function App() {
 
   function selectDevice(selectedDeviceId: string) {
     selectionGeneration.current += 1;
+    pageRequestGeneration.current += 1;
     selectedDeviceIdRef.current = selectedDeviceId;
+    offsetRef.current = 0;
     setDeviceId(selectedDeviceId);
+    setOffset(0);
     setConnectionError(null);
     setApiError(null);
     setMeasurementState(EMPTY_STATE);
+    setMeasurementPage(null);
+    setIsPageLoading(false);
   }
 
   useEffect(() => {
@@ -343,9 +436,20 @@ export default function App() {
             }
           },
           () => {
-            void loadAuthoritativeState(deviceId, token).then((reloadedState) => {
+            const reconnectOffset = offsetRef.current;
+            const reconnectOrder = orderRef.current;
+            void Promise.all([
+              getLatest(deviceId, token),
+              loadMeasurementPage(
+                deviceId,
+                token,
+                reconnectOffset,
+                reconnectOrder,
+                generation,
+              ),
+            ]).then(([latest]) => {
               if (isCurrent()) {
-                setMeasurementState(reloadedState);
+                setMeasurementState((current) => ({ ...current, latest }));
               }
             }).catch((error: unknown) => {
               if (isCurrent()) {
@@ -364,17 +468,22 @@ export default function App() {
           return;
         }
         closeSubscription = close;
-        const state = await loadAuthoritativeState(deviceId, token);
+        const initialOffset = offsetRef.current;
+        const initialOrder = orderRef.current;
+        const [latest] = await Promise.all([
+          getLatest(deviceId, token),
+          loadMeasurementPage(deviceId, token, initialOffset, initialOrder, generation),
+        ]);
         if (!isCurrent()) {
           return;
         }
-        const mergedState = pendingNotifications.reduce<MeasurementState>(
-          (current, notification) => mergeNotification(current, notification, PAGE_SIZE),
-          state,
-        );
+        const queuedNotifications = pendingNotifications.splice(0);
         pendingNotifications.length = 0;
         initialStateLoaded = true;
-        setMeasurementState(mergedState);
+        setMeasurementState((current) => queuedNotifications.reduce<MeasurementState>(
+          (state, notification) => mergeNotification(state, notification, PAGE_SIZE),
+          { ...current, latest },
+        ));
       } catch (error) {
         if (isCurrent()) {
           setConnectionError(error instanceof Error ? error.message : "Could not connect to notifications");
@@ -387,7 +496,7 @@ export default function App() {
       disposed = true;
       closeSubscription();
     };
-  }, [accessToken, deviceId, loadAuthoritativeState]);
+  }, [accessToken, deviceId, loadMeasurementPage]);
 
   useEffect(() => {
     const range = measurementState.missingRange;
@@ -403,12 +512,17 @@ export default function App() {
       accessToken,
       `after_index=${range.afterIndex}&through_index=${range.throughIndex}&limit=${PAGE_SIZE}`,
     ).then((page) => {
+      void page.results;
       if (isCurrent()) {
-        setMeasurementState((current) => ({
-          ...current,
-          rows: appendUniqueRows(current.rows, page.results),
-          missingRange: null,
-        }));
+        setMeasurementState((current) => {
+          if (
+            current.missingRange?.afterIndex !== range.afterIndex
+            || current.missingRange.throughIndex !== range.throughIndex
+          ) {
+            return current;
+          }
+          return { ...current, missingRange: null };
+        });
       }
     }).catch((error: unknown) => {
       if (isCurrent()) {
@@ -420,27 +534,55 @@ export default function App() {
     };
   }, [accessToken, deviceId, measurementState.missingRange]);
 
-  async function loadPreviousPage() {
-    const firstIndex = measurementState.rows[0]?.entry_index;
-    if (!accessToken || !deviceId || firstIndex === undefined) {
+  function loadAdjacentPage(targetOffset: number) {
+    if (
+      !accessToken
+      || !deviceId
+      || isPageLoading
+      || (targetOffset === offset && measurementPage?.offset === offset)
+    ) {
       return;
     }
-    const generation = selectionGeneration.current;
-    setApiError(null);
-    try {
-      const page = await getMeasurements(deviceId, accessToken, `before_index=${firstIndex}&limit=${PAGE_SIZE}`);
-      if (selectionGeneration.current !== generation) {
-        return;
-      }
-      setMeasurementState((current) => ({ ...current, rows: page.results, missingRange: null }));
-    } catch (error) {
-      if (selectionGeneration.current === generation) {
-        setApiError(error instanceof Error ? error.message : "Could not load the previous page");
-      }
+    void loadMeasurementPage(
+      deviceId,
+      accessToken,
+      targetOffset,
+      orderRef.current,
+      selectionGeneration.current,
+    );
+  }
+
+  function changeMeasurementOrder(nextOrder: MeasurementOrder) {
+    if (nextOrder === orderRef.current) {
+      return;
+    }
+    orderRef.current = nextOrder;
+    offsetRef.current = 0;
+    pageRequestGeneration.current += 1;
+    setOrder(nextOrder);
+    setOffset(0);
+    if (accessToken && deviceId) {
+      void loadMeasurementPage(
+        deviceId,
+        accessToken,
+        0,
+        nextOrder,
+        selectionGeneration.current,
+      );
     }
   }
 
   const { latest, rows } = measurementState;
+  const currentPage = measurementPage
+    ? Math.floor(measurementPage.offset / measurementPage.limit) + 1
+    : 1;
+  const totalPages = measurementPage
+    ? Math.max(1, Math.ceil(measurementPage.total / measurementPage.limit))
+    : 1;
+  const hasPrevious = measurementPage ? measurementPage.offset > 0 : false;
+  const hasNext = measurementPage
+    ? measurementPage.offset + measurementPage.results.length < measurementPage.total
+    : false;
   const selectedDevice = devices.find((device) => device.id === deviceId);
   const renderedAuthenticationGeneration = authenticationGeneration.current;
 
@@ -505,7 +647,31 @@ export default function App() {
 
       <section aria-label="Measurement history">
         <h2>Measurement history</h2>
-        <button type="button" onClick={() => void loadPreviousPage()} disabled={rows.length === 0}>Previous page</button>
+        <label>
+          Measurement order
+          <select
+            value={order}
+            onChange={(event) => changeMeasurementOrder(event.target.value as MeasurementOrder)}
+          >
+            <option value="desc">Newest first</option>
+            <option value="asc">Oldest first</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={() => measurementPage && loadAdjacentPage(Math.max(0, measurementPage.offset - measurementPage.limit))}
+          disabled={isPageLoading || !hasPrevious}
+        >
+          Previous
+        </button>
+        <span>Page {currentPage} of {totalPages}</span>
+        <button
+          type="button"
+          onClick={() => measurementPage && loadAdjacentPage(measurementPage.offset + measurementPage.limit)}
+          disabled={isPageLoading || !hasNext}
+        >
+          Next
+        </button>
         <table>
           <thead>
             <tr><th scope="col">Index</th><th scope="col">Name</th><th scope="col">Value</th><th scope="col">Measured time</th><th scope="col">Received time</th></tr>
