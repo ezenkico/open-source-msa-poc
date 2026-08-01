@@ -1,3 +1,4 @@
+import { startTransition, useState } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useDebouncedCallback } from "./useDebouncedCallback";
@@ -14,6 +15,36 @@ function Harness({ callback, resetKey }: HarnessProps) {
     <>
       <button type="button" onClick={schedule}>Schedule</button>
       <button type="button" onClick={cancel}>Cancel</button>
+    </>
+  );
+}
+
+const neverResolves = new Promise<never>(() => undefined);
+
+function Suspend(): null {
+  throw neverResolves;
+}
+
+interface SuspendedHarnessProps {
+  committedCallback: () => void;
+  interruptedCallback: () => void;
+}
+
+function SuspendedHarness({ committedCallback, interruptedCallback }: SuspendedHarnessProps) {
+  const [useInterruptedCallback, setUseInterruptedCallback] = useState(false);
+  const callback = useInterruptedCallback ? interruptedCallback : committedCallback;
+  const { schedule } = useDebouncedCallback(callback, 250, []);
+
+  return (
+    <>
+      <button type="button" onClick={schedule}>Schedule</button>
+      <button
+        type="button"
+        onClick={() => startTransition(() => setUseInterruptedCallback(true))}
+      >
+        Interrupt render
+      </button>
+      {useInterruptedCallback && <Suspend />}
     </>
   );
 }
@@ -84,5 +115,23 @@ describe("useDebouncedCallback", () => {
 
     expect(firstCallback).not.toHaveBeenCalled();
     expect(latestCallback).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the last committed callback during a suspended render", () => {
+    const committedCallback = vi.fn();
+    const interruptedCallback = vi.fn();
+    render(
+      <SuspendedHarness
+        committedCallback={committedCallback}
+        interruptedCallback={interruptedCallback}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Schedule" }));
+    fireEvent.click(screen.getByRole("button", { name: "Interrupt render" }));
+    act(() => vi.advanceTimersByTime(250));
+
+    expect(committedCallback).toHaveBeenCalledOnce();
+    expect(interruptedCallback).not.toHaveBeenCalled();
   });
 });

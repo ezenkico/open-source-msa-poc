@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
 export function useDebouncedCallback(
   callback: () => void,
@@ -8,7 +8,9 @@ export function useDebouncedCallback(
   const callbackRef = useRef(callback);
   const timeoutRef = useRef<number | null>(null);
 
-  callbackRef.current = callback;
+  useLayoutEffect(() => {
+    callbackRef.current = callback;
+  }, [callback]);
 
   const cancel = useCallback(() => {
     if (timeoutRef.current !== null) {
