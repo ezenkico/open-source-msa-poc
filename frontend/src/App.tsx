@@ -73,6 +73,7 @@ export default function App() {
   const selectionGeneration = useRef(0);
   const pageRequestGeneration = useRef(0);
   const pageLoadGeneration = useRef(0);
+  const measurementNotificationGeneration = useRef(0);
   const deviceListRequestGeneration = useRef(0);
   const authenticationGeneration = useRef(0);
   const loginAttemptGeneration = useRef(0);
@@ -108,6 +109,7 @@ export default function App() {
     requestedOffset: number,
     requestedOrder: MeasurementOrder,
     selectedGeneration: number,
+    commitResult = true,
   ): Promise<MeasurementPage | null> => {
     pageLoadGeneration.current += 1;
 
@@ -148,17 +150,22 @@ export default function App() {
         const committedPage = page.total === 0 && page.offset !== 0
           ? { ...page, offset: 0 }
           : page;
-        offsetRef.current = committedPage.offset;
-        setOffset(committedPage.offset);
-        setMeasurementPage(committedPage);
-        setMeasurementState((current) => ({
-          ...current,
-          rows: committedPage.results,
-        }));
-        setApiError(null);
+        if (commitResult) {
+          offsetRef.current = committedPage.offset;
+          setOffset(committedPage.offset);
+          setMeasurementPage(committedPage);
+          setMeasurementState((current) => ({
+            ...current,
+            rows: committedPage.results,
+          }));
+          setApiError(null);
+        }
         return committedPage;
       } catch (error) {
         if (isCurrentRequest()) {
+          if (!commitResult) {
+            throw error;
+          }
           setApiError(error instanceof Error ? error.message : "Could not load measurements");
         }
         return null;
@@ -181,6 +188,7 @@ export default function App() {
     const selectedOffset = offsetRef.current;
     const selectedOrder = orderRef.current;
     const generation = selectionGeneration.current;
+    const notificationGeneration = measurementNotificationGeneration.current;
     if (!accessToken || !selectedDeviceId) {
       return;
     }
@@ -195,17 +203,31 @@ export default function App() {
       selectedOffset,
       selectedOrder,
       generation,
+      false,
+    ).then(
+      (page) => ({ page, status: "fulfilled" as const }),
+      (error: unknown) => ({ error, status: "rejected" as const }),
     );
     const loadGeneration = pageLoadGeneration.current;
     void Promise.all([
       latestRequest,
       pageRequest,
-    ]).then(([latestResult, page]) => {
+    ]).then(([latestResult, pageResult]) => {
       if (
-        !page
-        || selectionGeneration.current !== generation
+        selectionGeneration.current !== generation
         || pageLoadGeneration.current !== loadGeneration
+        || measurementNotificationGeneration.current !== notificationGeneration
       ) {
+        return;
+      }
+      if (pageResult.status === "rejected") {
+        setApiError(pageResult.error instanceof Error
+          ? pageResult.error.message
+          : "Could not load measurements");
+        return;
+      }
+      const page = pageResult.page;
+      if (!page) {
         return;
       }
       if (latestResult.status === "rejected") {
@@ -214,7 +236,20 @@ export default function App() {
           : "Could not reload measurements");
         return;
       }
-      setMeasurementState((current) => ({ ...current, latest: latestResult.latest }));
+      offsetRef.current = page.offset;
+      setOffset(page.offset);
+      setMeasurementPage(page);
+      setMeasurementState((current) => ({
+        ...current,
+        latest: (
+          !latestResult.latest
+          || (current.latest && current.latest.entry_index > latestResult.latest.entry_index)
+        )
+          ? current.latest
+          : latestResult.latest,
+        rows: page.results,
+      }));
+      setApiError(null);
     });
   }, [accessToken, loadMeasurementPage]);
 
@@ -483,6 +518,7 @@ export default function App() {
               if (!initialStateLoaded) {
                 pendingNotifications.push(notification);
               } else {
+                measurementNotificationGeneration.current += 1;
                 setMeasurementState((current) => mergeNotification(current, notification));
                 scheduleMeasurementRefresh();
               }

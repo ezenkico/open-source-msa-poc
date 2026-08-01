@@ -981,6 +981,38 @@ describe("App", () => {
       expect(api.getMeasurements).toHaveBeenCalledOnce();
     });
 
+    it("does not let an older paired refresh regress a newer live notification", async () => {
+      const olderLatest = deferred<Measurement | null>();
+      const olderPage = deferred<MeasurementPage>();
+      render(<App />);
+      await logInAndSelect();
+      await waitForInitialMeasurements();
+      api.getLatest.mockClear();
+      api.getMeasurements.mockClear();
+      api.getLatest.mockReturnValue(olderLatest.promise);
+      api.getMeasurements.mockReturnValue(olderPage.promise);
+      vi.useFakeTimers();
+
+      act(() => notification(measurement(3)));
+      await advanceTimersByTime(250);
+      await act(async () => {
+        olderLatest.resolve(measurement(3));
+        await olderLatest.promise;
+      });
+
+      act(() => notification(measurement(4)));
+      expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 4");
+      await act(async () => {
+        olderPage.resolve(measurementPage([measurement(3), measurement(2), measurement(1)], { total: 3 }));
+        await olderPage.promise;
+      });
+
+      expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 4");
+      expect(screen.getAllByRole("row")).toHaveLength(3);
+      expect(screen.getAllByRole("row")[1]).toHaveTextContent("1");
+      expect(screen.getAllByRole("row")[2]).toHaveTextContent("2");
+    });
+
     it("refreshes the exact current ascending page and replaces rows and total metadata", async () => {
       const firstPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
       const secondPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(70 - index));
@@ -1127,6 +1159,57 @@ describe("App", () => {
       expect(screen.getAllByRole("row")[1]).toHaveTextContent("122");
     });
 
+    it("keeps the current page atomic when latest fails and retries on a later notification", async () => {
+      const initialRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
+      const failedLatest = deferred<Measurement | null>();
+      const successfulPage = deferred<MeasurementPage>();
+      api.getMeasurements.mockResolvedValueOnce(measurementPage(initialRows, { total: 120 }));
+      api.getLatest.mockResolvedValueOnce(measurement(120));
+      render(<App />);
+      await logInAndSelect();
+      await waitFor(() => expect(screen.getByText("Page 1 of 3")).toBeInTheDocument());
+      api.getLatest.mockClear();
+      api.getMeasurements.mockClear();
+      api.getLatest.mockReturnValueOnce(failedLatest.promise);
+      api.getMeasurements.mockReturnValueOnce(successfulPage.promise);
+      vi.useFakeTimers();
+
+      act(() => notification(measurement(121)));
+      await advanceTimersByTime(250);
+      await act(async () => {
+        successfulPage.resolve(measurementPage([measurement(999)], { total: 175 }));
+        await successfulPage.promise;
+      });
+
+      expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+      expect(screen.getAllByRole("row")).toHaveLength(PAGE_SIZE + 1);
+      expect(screen.getAllByRole("row")[1]).toHaveTextContent("120");
+
+      await act(async () => {
+        failedLatest.reject(new Error("latest refresh unavailable"));
+        await failedLatest.promise.catch(() => undefined);
+      });
+      vi.useRealTimers();
+
+      expect(await screen.findByRole("alert")).toHaveTextContent("API error: latest refresh unavailable");
+      expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+      expect(screen.getAllByRole("row")).toHaveLength(PAGE_SIZE + 1);
+      expect(screen.getAllByRole("row")[1]).toHaveTextContent("120");
+
+      api.getLatest.mockClear();
+      api.getMeasurements.mockClear();
+      api.getLatest.mockResolvedValue(measurement(122));
+      api.getMeasurements.mockResolvedValue(measurementPage([measurement(122)], { total: 121 }));
+      vi.useFakeTimers();
+      act(() => notification(measurement(122)));
+      await advanceTimersByTime(250);
+
+      expect(screen.queryByText(/latest refresh unavailable/i)).not.toBeInTheDocument();
+      expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+      expect(screen.getAllByRole("row")).toHaveLength(2);
+      expect(screen.getAllByRole("row")[1]).toHaveTextContent("122");
+    });
+
     it("ignores a live refresh success after the measurement order changes", async () => {
       const staleLatest = deferred<Measurement | null>();
       const stalePage = deferred<MeasurementPage>();
@@ -1155,7 +1238,8 @@ describe("App", () => {
         stalePage.resolve(measurementPage([measurement(777)], { total: 1 }));
         await stalePage.promise;
       });
-      expect(screen.getAllByRole("row")[1]).toHaveTextContent("777");
+      expect(screen.getAllByRole("row")).toHaveLength(3);
+      expect(screen.getAllByRole("row")[1]).toHaveTextContent("1");
       vi.useRealTimers();
       fireEvent.change(screen.getByLabelText(/measurement order/i), { target: { value: "asc" } });
       await waitFor(() => expect(screen.getAllByRole("row")[1]).toHaveTextContent("900"));
