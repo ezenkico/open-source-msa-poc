@@ -57,7 +57,7 @@ def send_measurement_response(
 ) -> dict:
     body = encode_measurement(name, value, measured_at)
     return requests.post(
-        url,
+        f"{url}/api/device-measurements/",
         data=body,
         headers={
             "Content-Type": "application/json",

@@ -7,7 +7,7 @@ import base64
 
 res = []
 
-for _ in range(255):
+for _ in range(32):
   res.append(random.randint(255))
 
 secret = base64.b64encode(bytearray(res)).decode("utf-8")
