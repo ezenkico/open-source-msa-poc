@@ -7,6 +7,29 @@ const api = vi.hoisted(() => ({
   createDevice: vi.fn(),
 }));
 
+const reactLifecycle = vi.hoisted(() => ({
+  deferPassiveCleanup: false,
+  deferredCleanups: [] as Array<() => unknown>,
+}));
+
+vi.mock("react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react")>();
+  const useEffect: typeof actual.useEffect = (setup, dependencies) => actual.useEffect(() => {
+    const cleanup = setup();
+    return () => {
+      if (typeof cleanup !== "function") {
+        return;
+      }
+      if (reactLifecycle.deferPassiveCleanup) {
+        reactLifecycle.deferredCleanups.push(cleanup);
+      } else {
+        cleanup();
+      }
+    };
+  }, dependencies);
+  return { ...actual, useEffect };
+});
+
 vi.mock("./api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./api")>()),
   createDevice: api.createDevice,
@@ -64,6 +87,8 @@ describe("DeviceProvisioning", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    reactLifecycle.deferPassiveCleanup = false;
+    reactLifecycle.deferredCleanups.splice(0).forEach((cleanup) => cleanup());
     writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -136,6 +161,36 @@ describe("DeviceProvisioning", () => {
       />,
     );
     expect(screen.queryByText(CREATED_DEVICE.key)).not.toBeInTheDocument();
+  });
+
+  it("invalidates a pending creation before deferred passive cleanup runs", async () => {
+    const pending = deferred<CreatedDevice>();
+    api.createDevice.mockReturnValueOnce(pending.promise);
+    reactLifecycle.deferPassiveCleanup = true;
+
+    try {
+      const callbacks = renderProvisioning();
+      enterNameAndSubmit("Boiler");
+      callbacks.rerender(
+        <DeviceProvisioning
+          accessToken="access-token"
+          canAddDevices={false}
+          onCreated={callbacks.onCreated}
+          onAuthenticationLost={callbacks.onAuthenticationLost}
+          onPermissionDenied={callbacks.onPermissionDenied}
+        />,
+      );
+
+      await act(async () => {
+        pending.resolve(CREATED_DEVICE);
+        await pending.promise;
+      });
+
+      expect(callbacks.onCreated).not.toHaveBeenCalled();
+    } finally {
+      reactLifecycle.deferPassiveCleanup = false;
+      reactLifecycle.deferredCleanups.splice(0).forEach((cleanup) => cleanup());
+    }
   });
 
   it("submits the required name once and disables repeat submission while pending", () => {

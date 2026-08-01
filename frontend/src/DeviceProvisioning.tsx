@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { ApiError, createDevice, type CreatedDevice } from "./api";
 
 export type DeviceProvisioningProps = {
@@ -35,7 +35,7 @@ function EnabledDeviceProvisioning({
   const isMounted = useRef(true);
   const clipboardOperation = useRef(0);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     isMounted.current = true;
     return () => {
       isMounted.current = false;
