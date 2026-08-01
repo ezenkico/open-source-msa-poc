@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .auth_views import CurrentUserView
 from .views import (
     DeviceListCreateView,
     DeviceRotateKeyView,
@@ -10,6 +11,7 @@ from .views import (
 
 
 urlpatterns = [
+    path("auth/me/", CurrentUserView.as_view()),
     path("devices/", DeviceListCreateView.as_view()),
     path("devices/<uuid:device_id>/rotate-key/", DeviceRotateKeyView.as_view()),
     path(
