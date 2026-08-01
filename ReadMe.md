@@ -49,9 +49,11 @@ Create the local environment file:
 cp example.env .env
 ```
 
-Replace every placeholder. Generate the encryption key with:
+The generator uses NumPy. Install that dependency, then generate the encryption
+key:
 
 ```sh
+python3 -m pip install numpy
 python3 generate-encryption-key.py
 ```
 
@@ -139,14 +141,24 @@ python3 -m venv .venv
 .venv/bin/pip install requests
 ```
 
-Put the device ID and one-time `DEVICE_KEY` returned during provisioning in
-`.env` as `DEVICE_ID` and `DEVICE_KEY_ENCRYPTION_KEY`, respectively. The
-simulator currently reads that environment variable as its default signing-key
-input; `--key` remains available as an override. Then run:
+Put the device ID in `.env` as `DEVICE_ID`. Do not overwrite Django's
+`DEVICE_KEY_ENCRYPTION_KEY` with the per-device key. Instead, load that key
+into a temporary shell variable without recording it in shell history:
+
+```sh
+read -rsp 'Device key: ' DEVICE_KEY
+export DEVICE_KEY
+printf '\n'
+```
+
+Pass the returned per-device key with `--key`. The simulator currently looks
+up `DEVICE_KEY_ENCRYPTION_KEY` when `--key` is omitted, so providing the
+explicit per-device key keeps it distinct from Django's server key:
 
 ```sh
 .venv/bin/python iot-device-sim.py \
-  --url http://localhost/api/device-measurements/ \
+  --url http://localhost \
+  --key "$DEVICE_KEY" \
   --name temperature \
   --value 21.7
 ```
