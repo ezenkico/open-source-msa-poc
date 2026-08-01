@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
   getLatest,
@@ -139,7 +139,7 @@ export default function App() {
     };
   }, [logout]);
 
-  async function submitLogin(event: FormEvent<HTMLFormElement>) {
+  async function submitLogin(event: any) {
     event.preventDefault();
     setApiError(null);
     try {
