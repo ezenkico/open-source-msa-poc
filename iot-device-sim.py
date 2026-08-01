@@ -98,7 +98,7 @@ def main() -> None:
     parser.add_argument("--url", default="http://localhost")
     parser.add_argument("--device-id", default=os.environ.get("DEVICE_ID"))
     parser.add_argument(
-        "--key", default=os.environ.get("DEVICE_KEY_ENCRYPTION_KEY"), help="Base64 provisioning key"
+        "--key", default=os.environ.get("DEVICE_KEY"), help="Base64 provisioning key"
     )
     parser.add_argument("--name", required=True)
     parser.add_argument("--value", required=True, type=float)
