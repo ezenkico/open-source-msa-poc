@@ -55,6 +55,8 @@ grep -q 'returned once per provisioned device' ReadMe.md
 grep -Fq -- '--url http://localhost \' ReadMe.md
 ! grep -Fq -- '--url http://localhost/api/device-measurements/' ReadMe.md
 grep -Fq 'Pass the returned per-device key with `--key`' ReadMe.md
+grep -Fq 'The simulator looks up `DEVICE_KEY` when `--key` is omitted' ReadMe.md
+! grep -Fq 'The simulator currently looks up `DEVICE_KEY_ENCRYPTION_KEY` when `--key` is omitted' ReadMe.md
 ! grep -Fq 'as `DEVICE_ID` and `DEVICE_KEY_ENCRYPTION_KEY`, respectively' ReadMe.md
 grep -Fq 'The hidden prompt keeps the per-device key out of shell history and the shared `.env`' ReadMe.md
 ! grep -Fq 'storing provisioned values in `.env` avoids exposing real credentials' ReadMe.md

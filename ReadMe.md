@@ -151,9 +151,7 @@ export DEVICE_KEY
 printf '\n'
 ```
 
-Pass the returned per-device key with `--key`. The simulator currently looks
-up `DEVICE_KEY_ENCRYPTION_KEY` when `--key` is omitted, so providing the
-explicit per-device key keeps it distinct from Django's server key:
+Pass the returned per-device key with `--key`. The simulator looks up `DEVICE_KEY` when `--key` is omitted, so providing the explicit per-device key keeps it distinct from Django's server key:
 
 ```sh
 .venv/bin/python iot-device-sim.py \

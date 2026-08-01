@@ -27,7 +27,7 @@ class DeviceSimulatorTests(unittest.TestCase):
             dotenv_path.write_text(
                 "# Device credentials\n"
                 "DEVICE_ID=file-id\n"
-                'export DEVICE_KEY_ENCRYPTION_KEY="file-key"\n',
+                'export DEVICE_KEY="file-key"\n',
                 encoding="utf-8",
             )
 
@@ -36,7 +36,7 @@ class DeviceSimulatorTests(unittest.TestCase):
 
                 self.assertEqual(os.environ["DEVICE_ID"], "process-id")
                 self.assertEqual(
-                    os.environ["DEVICE_KEY_ENCRYPTION_KEY"], "file-key"
+                    os.environ["DEVICE_KEY"], "file-key"
                 )
 
     def test_main_uses_dotenv_device_credentials(self):
@@ -47,7 +47,7 @@ class DeviceSimulatorTests(unittest.TestCase):
             environ.update(
                 {
                     "DEVICE_ID": "dotenv-id",
-                    "DEVICE_KEY_ENCRYPTION_KEY": encoded_key,
+                    "DEVICE_KEY": encoded_key,
                 }
             )
 
@@ -92,7 +92,7 @@ class DeviceSimulatorTests(unittest.TestCase):
                 os.environ,
                 {
                     "DEVICE_ID": "environment-id",
-                    "DEVICE_KEY_ENCRYPTION_KEY": environment_key,
+                    "DEVICE_KEY": environment_key,
                 },
                 clear=True,
             ),
