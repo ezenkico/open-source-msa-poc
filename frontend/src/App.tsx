@@ -588,26 +588,7 @@ export default function App() {
             }
             updateMeasurementConnection("live");
             setMeasurementConnectionError(null);
-            const reconnectOffset = offsetRef.current;
-            const reconnectOrder = orderRef.current;
-            void Promise.all([
-              getLatest(deviceId, token),
-              loadMeasurementPage(
-                deviceId,
-                token,
-                reconnectOffset,
-                reconnectOrder,
-                generation,
-              ),
-            ]).then(([latest]) => {
-              if (isCurrent()) {
-                setMeasurementState((current) => ({ ...current, latest }));
-              }
-            }).catch((error: unknown) => {
-              if (isCurrent()) {
-                setApiError(error instanceof Error ? error.message : "Could not reload measurements");
-              }
-            });
+            refreshSelectedMeasurements();
           },
           (error) => {
             if (isCurrent()) {
@@ -684,7 +665,14 @@ export default function App() {
       disposed = true;
       closeSubscription();
     };
-  }, [accessToken, deviceId, loadMeasurementPage, scheduleMeasurementRefresh, updateMeasurementConnection]);
+  }, [
+    accessToken,
+    deviceId,
+    loadMeasurementPage,
+    refreshSelectedMeasurements,
+    scheduleMeasurementRefresh,
+    updateMeasurementConnection,
+  ]);
 
   useEffect(() => {
     const range = measurementState.missingRange;

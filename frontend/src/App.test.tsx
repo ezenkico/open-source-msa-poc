@@ -422,6 +422,65 @@ describe("App", () => {
     );
   });
 
+  it("does not let a stale reconnect latest result overwrite a newer notification", async () => {
+    const staleReconnectLatest = deferred<Measurement | null>();
+    render(<App />);
+    await logInAndSelect();
+    await waitFor(() => expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 2"));
+    act(() => measurementConnectionFailure(new Error("Measurement transport lost")));
+    api.getLatest.mockClear();
+    api.getMeasurements.mockClear();
+    api.getLatest.mockReturnValueOnce(staleReconnectLatest.promise);
+    api.getMeasurements.mockResolvedValueOnce(measurementPage([measurement(2), measurement(1)], { total: 2 }));
+
+    act(() => reconnect());
+    await waitFor(() => expect(api.getLatest).toHaveBeenCalledOnce());
+    act(() => notification(measurement(3)));
+
+    expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 3");
+    await act(async () => {
+      staleReconnectLatest.resolve(measurement(2));
+      await staleReconnectLatest.promise;
+    });
+
+    expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 3");
+  });
+
+  it("ignores a stale reconnect latest failure after changing order", async () => {
+    const staleReconnectLatest = deferred<Measurement | null>();
+    const staleReconnectPage = deferred<MeasurementPage>();
+    render(<App />);
+    await logInAndSelect();
+    await waitFor(() => expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 2"));
+    act(() => measurementConnectionFailure(new Error("Measurement transport lost")));
+    api.getLatest.mockClear();
+    api.getMeasurements.mockClear();
+    api.getLatest.mockReturnValueOnce(staleReconnectLatest.promise);
+    api.getMeasurements.mockImplementation((_deviceId, _token, query) => (
+      query.endsWith("order=desc")
+        ? staleReconnectPage.promise
+        : Promise.resolve(measurementPage([measurement(900)], { total: 1, order: "asc" }))
+    ));
+
+    act(() => reconnect());
+    await waitFor(() => expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=0&order=desc`,
+    ));
+    fireEvent.change(screen.getByLabelText(/measurement order/i), { target: { value: "asc" } });
+    await screen.findByText("Page 1 of 1");
+
+    await act(async () => {
+      staleReconnectLatest.reject(new Error("stale reconnect latest failed"));
+      await staleReconnectLatest.promise.catch(() => undefined);
+      staleReconnectPage.resolve(measurementPage([measurement(2), measurement(1)], { total: 2 }));
+      await staleReconnectPage.promise;
+    });
+
+    expect(screen.queryByText(/stale reconnect latest failed/i)).not.toBeInTheDocument();
+  });
+
   it("restores a valid session only after devices and capability both load", async () => {
     const listedDevices = deferred<typeof DEVICE_ONE[]>();
     const currentUser = deferred<{ can_add_devices: boolean }>();
