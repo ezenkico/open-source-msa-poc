@@ -46,6 +46,18 @@ grep -Eq '\./nsc[[:space:]]+generate[[:space:]]+nkey[[:space:]]+--account[[:spac
 grep -A1 'first generated line' ReadMe.md | grep -q 'ACCOUNT_SIGNER_SEED'
 grep -A1 'the second is' ReadMe.md | grep -q 'ACCOUNT_SIGNER_PUB'
 grep -q 'nats-keys' ReadMe.md
+grep -q 'python3 generate-encryption-key.py' ReadMe.md
+grep -q 'python3 -m pip install numpy' ReadMe.md
+grep -q 'DEVICE_KEY_ENCRYPTION_KEY' ReadMe.md
+grep -q 'server-side 32-byte AES-256 key-encryption key' ReadMe.md
+grep -Fq 'plaintext `DEVICE_KEY` is returned once per provisioned device' ReadMe.md
+grep -q 'returned once per provisioned device' ReadMe.md
+grep -Fq -- '--url http://localhost \' ReadMe.md
+! grep -Fq -- '--url http://localhost/api/device-measurements/' ReadMe.md
+grep -Fq 'Pass the returned per-device key with `--key`' ReadMe.md
+! grep -Fq 'as `DEVICE_ID` and `DEVICE_KEY_ENCRYPTION_KEY`, respectively' ReadMe.md
+grep -Fq 'The hidden prompt keeps the per-device key out of shell history and the shared `.env`' ReadMe.md
+! grep -Fq 'storing provisioned values in `.env` avoids exposing real credentials' ReadMe.md
 grep -qx 'nats-keys' .gitignore
 grep -qx 'nats-keys' .dockerignore
 test ! -e setup-nkey.sh

@@ -49,12 +49,17 @@ Create the local environment file:
 cp example.env .env
 ```
 
-Replace every placeholder. Generate the 32-byte AES device-key encryption
-key, for example, with:
+The generator uses NumPy. Install that dependency, then generate the encryption
+key:
 
 ```sh
-openssl rand -base64 32
+python3 -m pip install numpy
+python3 generate-encryption-key.py
 ```
+
+Copy the base64 output into `DEVICE_KEY_ENCRYPTION_KEY` in `.env`. This is the
+server-side 32-byte AES-256 key-encryption key used to protect provisioned
+device keys at rest, so it must remain secret.
 
 Generate an NATS account signer pair:
 
@@ -115,8 +120,8 @@ curl --fail --silent --show-error \
   http://localhost/api/devices/
 ```
 
-The create response returns the device UUID and plaintext key exactly once.
-Store the key securely. Django stores only an AES-256-GCM-encrypted form.
+The plaintext `DEVICE_KEY` is returned once per provisioned device. Store the
+key securely. Django stores only an AES-256-GCM-encrypted form.
 Key rotation is available with:
 
 ```sh
@@ -136,18 +141,29 @@ python3 -m venv .venv
 .venv/bin/pip install requests
 ```
 
-Put the device ID and one-time key returned during provisioning in `.env` as
-`DEVICE_ID` and `DEVICE_KEY`. Then run:
+Put the device ID in `.env` as `DEVICE_ID`. Do not overwrite Django's
+`DEVICE_KEY_ENCRYPTION_KEY` with the per-device key. Instead, load that key
+into a temporary shell variable without recording it in shell history:
+
+```sh
+read -rsp 'Device key: ' DEVICE_KEY
+export DEVICE_KEY
+printf '\n'
+```
+
+Pass the returned per-device key with `--key`. The simulator currently looks
+up `DEVICE_KEY_ENCRYPTION_KEY` when `--key` is omitted, so providing the
+explicit per-device key keeps it distinct from Django's server key:
 
 ```sh
 .venv/bin/python iot-device-sim.py \
-  --url http://localhost/api/device-measurements/ \
+  --url http://localhost \
+  --key "$DEVICE_KEY" \
   --name temperature \
   --value 21.7
 ```
 
-`--device-id` and `--key` remain available as overrides, but storing
-provisioned values in `.env` avoids exposing real credentials in shell history.
+`DEVICE_ID` may remain in `.env`. The hidden prompt keeps the per-device key out of shell history and the shared `.env`.
 The simulator signs the exact JSON body with HMAC-SHA256 and communicates only
 over HTTP.
 

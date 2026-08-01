@@ -8,6 +8,8 @@ import {
   listDevices,
   login,
 } from "./api";
+import type { MeasurementPage } from "./api";
+import type { Measurement } from "./measurementState";
 
 function response(body: unknown, status = 200): Response {
   return {
@@ -28,6 +30,23 @@ const createdDevice = {
   key: "provisioning-key",
 };
 
+const measurement: Measurement = {
+  device_id: "a1111111-1111-4111-8111-111111111111",
+  entry_index: 2,
+  measurement_name: "temperature",
+  value: 21.5,
+  measured_at: "2026-08-01T12:00:00Z",
+  received_at: "2026-08-01T12:00:01Z",
+};
+
+const measurementPage: MeasurementPage = {
+  results: [measurement, { ...measurement, entry_index: 5 }],
+  total: 7,
+  limit: 2,
+  offset: 1,
+  order: "asc",
+};
+
 describe("API adapter", () => {
   it("posts credentials to the relative login URL", async () => {
     const fetchMock = vi.fn().mockResolvedValue(response({ access: "access-token" }));
@@ -42,15 +61,93 @@ describe("API adapter", () => {
     });
   });
 
-  it("uses a relative measurement URL and Bearer authorization", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(response([]));
+  it("preserves a normal measurement query and returns its validated page", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(response(measurementPage));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(getMeasurements("device-1", "access-token", "limit=50")).resolves.toEqual([]);
+    await expect(
+      getMeasurements("device-1", "access-token", "limit=2&offset=1&order=asc"),
+    ).resolves.toEqual(measurementPage);
 
-    expect(fetchMock).toHaveBeenCalledWith("/api/devices/device-1/measurements/?limit=50", {
+    expect(fetchMock).toHaveBeenCalledWith("/api/devices/device-1/measurements/?limit=2&offset=1&order=asc", {
       headers: { Authorization: "Bearer access-token" },
     });
+  });
+
+  it("preserves a gap measurement query and returns its envelope", async () => {
+    const gapPage: MeasurementPage = {
+      results: [{ ...measurement, entry_index: 3 }, { ...measurement, entry_index: 5 }],
+      total: 2,
+      limit: 50,
+      offset: 0,
+      order: "asc",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(response(gapPage));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      getMeasurements("device-1", "access-token", "after_index=2&through_index=5&limit=50"),
+    ).resolves.toEqual(gapPage);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/devices/device-1/measurements/?after_index=2&through_index=5&limit=50",
+      { headers: { Authorization: "Bearer access-token" } },
+    );
+  });
+
+  it.each([
+    null,
+    [],
+    "not a page",
+  ])("rejects a non-object measurement page: %o", async (body) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(body)));
+
+    await expect(getMeasurements("device-1", "token", "limit=50")).rejects.toThrow();
+  });
+
+  it("rejects a measurement page whose results are not an array", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ ...measurementPage, results: {} })));
+
+    await expect(getMeasurements("device-1", "token", "limit=50")).rejects.toThrow();
+  });
+
+  it.each([
+    ["device_id", 42],
+    ["entry_index", 1.5],
+    ["entry_index", Number.MAX_SAFE_INTEGER + 1],
+    ["measurement_name", null],
+    ["value", "21.5"],
+    ["value", Number.POSITIVE_INFINITY],
+    ["measured_at", false],
+    ["received_at", undefined],
+  ] as const)("rejects a measurement with an invalid %s field", async (field, invalidValue) => {
+    const invalidMeasurement = { ...measurement, [field]: invalidValue };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({
+      ...measurementPage,
+      results: [invalidMeasurement],
+    })));
+
+    await expect(getMeasurements("device-1", "token", "limit=50")).rejects.toThrow();
+  });
+
+  it.each([
+    ["total", -1],
+    ["total", 1.5],
+    ["total", Number.MAX_SAFE_INTEGER + 1],
+    ["limit", 0],
+    ["limit", 1.5],
+    ["limit", Number.MAX_SAFE_INTEGER + 1],
+    ["offset", -1],
+    ["offset", 1.5],
+    ["offset", Number.MAX_SAFE_INTEGER + 1],
+    ["order", "newest"],
+  ] as const)("rejects a measurement page with invalid %s metadata", async (field, invalidValue) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({
+      ...measurementPage,
+      [field]: invalidValue,
+    })));
+
+    await expect(getMeasurements("device-1", "token", "limit=50")).rejects.toThrow();
   });
 
   it("gets the current-user capability with Bearer authorization", async () => {

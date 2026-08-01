@@ -27,7 +27,7 @@ class DeviceSimulatorTests(unittest.TestCase):
             dotenv_path.write_text(
                 "# Device credentials\n"
                 "DEVICE_ID=file-id\n"
-                'export DEVICE_KEY="file-key"\n',
+                'export DEVICE_KEY_ENCRYPTION_KEY="file-key"\n',
                 encoding="utf-8",
             )
 
@@ -35,14 +35,21 @@ class DeviceSimulatorTests(unittest.TestCase):
                 iot_device_sim.load_dotenv(dotenv_path, os.environ)
 
                 self.assertEqual(os.environ["DEVICE_ID"], "process-id")
-                self.assertEqual(os.environ["DEVICE_KEY"], "file-key")
+                self.assertEqual(
+                    os.environ["DEVICE_KEY_ENCRYPTION_KEY"], "file-key"
+                )
 
     def test_main_uses_dotenv_device_credentials(self):
         encoded_key = base64.b64encode(b"dotenv key").decode("ascii")
         send_measurement = Mock(return_value={"entry_index": 1})
 
         def provide_dotenv(_path, environ):
-            environ.update({"DEVICE_ID": "dotenv-id", "DEVICE_KEY": encoded_key})
+            environ.update(
+                {
+                    "DEVICE_ID": "dotenv-id",
+                    "DEVICE_KEY_ENCRYPTION_KEY": encoded_key,
+                }
+            )
 
         with (
             patch.dict(os.environ, {}, clear=True),
@@ -83,7 +90,10 @@ class DeviceSimulatorTests(unittest.TestCase):
         with (
             patch.dict(
                 os.environ,
-                {"DEVICE_ID": "environment-id", "DEVICE_KEY": environment_key},
+                {
+                    "DEVICE_ID": "environment-id",
+                    "DEVICE_KEY_ENCRYPTION_KEY": environment_key,
+                },
                 clear=True,
             ),
             patch.object(iot_device_sim, "load_dotenv"),
@@ -197,7 +207,7 @@ class DeviceSimulatorTests(unittest.TestCase):
         post.return_value = response
 
         result = iot_device_sim.send_measurement_response(
-            "http://localhost/api/device-measurements/",
+            "http://localhost",
             "device-id",
             b"d" * 32,
             "temperature",
@@ -206,6 +216,10 @@ class DeviceSimulatorTests(unittest.TestCase):
         )
 
         self.assertIs(result, response)
+        post.assert_called_once()
+        self.assertEqual(
+            post.call_args.args[0], "http://localhost/api/device-measurements/"
+        )
 
     @patch("iot_device_sim.requests.post")
     def test_post_sends_exact_body_and_device_headers(self, post):
@@ -215,7 +229,7 @@ class DeviceSimulatorTests(unittest.TestCase):
         )
 
         result = iot_device_sim.send_measurement(
-            "http://localhost/api/device-measurements/",
+            "http://localhost",
             "device-id",
             b"d" * 32,
             "temperature",
@@ -252,13 +266,18 @@ class DeviceSimulatorTests(unittest.TestCase):
 
         with self.assertRaises(iot_device_sim.requests.HTTPError):
             iot_device_sim.send_measurement(
-                "http://localhost/api/device-measurements/",
+                "http://localhost",
                 "device-id",
                 b"d" * 32,
                 "temperature",
                 21.5,
                 "2026-07-25T18:30:00Z",
             )
+
+        post.assert_called_once()
+        self.assertEqual(
+            post.call_args.args[0], "http://localhost/api/device-measurements/"
+        )
 
 
 if __name__ == "__main__":
