@@ -145,24 +145,33 @@ class MeasurementListView(AuthenticatedMeasurementView):
         get_object_or_404(Device, id=device_id)
 
         limit = query.validated_data["limit"]
-        before_index = query.validated_data.get("before_index")
+        offset = query.validated_data["offset"]
+        order = query.validated_data["order"]
         after_index = query.validated_data.get("after_index")
         through_index = query.validated_data.get("through_index")
         queryset = Measurement.objects.filter(device_id=device_id)
 
-        if before_index is not None:
-            rows = list(
-                queryset.filter(entry_index__lt=before_index)
-                .order_by("-entry_index")[:limit]
-            )
-            rows.reverse()
-        elif after_index is not None:
+        if after_index is not None:
             queryset = queryset.filter(entry_index__gt=after_index)
             if through_index is not None:
                 queryset = queryset.filter(entry_index__lte=through_index)
+            total = queryset.count()
             rows = list(queryset.order_by("entry_index")[:limit])
+            effective_offset = 0
+            effective_order = "asc"
         else:
-            rows = list(queryset.order_by("-entry_index")[:limit])
-            rows.reverse()
+            total = queryset.count()
+            ordering = "entry_index" if order == "asc" else "-entry_index"
+            rows = list(queryset.order_by(ordering)[offset : offset + limit])
+            effective_offset = offset
+            effective_order = order
 
-        return Response(MeasurementSerializer(rows, many=True).data)
+        return Response(
+            {
+                "results": MeasurementSerializer(rows, many=True).data,
+                "total": total,
+                "limit": limit,
+                "offset": effective_offset,
+                "order": effective_order,
+            }
+        )

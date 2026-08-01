@@ -56,9 +56,10 @@ class MeasurementSerializer(serializers.ModelSerializer):
 
 class MeasurementListQuerySerializer(serializers.Serializer):
     limit = serializers.IntegerField(min_value=1, max_value=200, default=50)
-    before_index = serializers.IntegerField(
-        min_value=0, max_value=MAX_ENTRY_INDEX, required=False
+    offset = serializers.IntegerField(
+        min_value=0, max_value=MAX_ENTRY_INDEX, default=0
     )
+    order = serializers.ChoiceField(choices=("asc", "desc"), default="desc")
     after_index = serializers.IntegerField(
         min_value=0, max_value=MAX_ENTRY_INDEX, required=False
     )
@@ -86,15 +87,14 @@ class MeasurementListQuerySerializer(serializers.Serializer):
         return super().to_internal_value(data)
 
     def validate(self, attrs):
-        before_index = attrs.get("before_index")
         after_index = attrs.get("after_index")
         through_index = attrs.get("through_index")
 
-        if before_index is not None and (
-            after_index is not None or through_index is not None
+        if after_index is not None and (
+            "offset" in self.initial_data or "order" in self.initial_data
         ):
             raise serializers.ValidationError(
-                "before_index cannot be combined with after_index or through_index."
+                "after_index cannot be combined with offset or order."
             )
         if through_index is not None and after_index is None:
             raise serializers.ValidationError("through_index requires after_index.")
