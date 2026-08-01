@@ -89,6 +89,12 @@ export default function App() {
   const selectedDeviceIdRef = useRef("");
   const offsetRef = useRef(0);
   const orderRef = useRef<MeasurementOrder>("desc");
+  const measurementConnectionRef = useRef<ConnectionState>("connecting");
+
+  const updateMeasurementConnection = useCallback((nextConnection: ConnectionState) => {
+    measurementConnectionRef.current = nextConnection;
+    setMeasurementConnection(nextConnection);
+  }, []);
 
   const logout = useCallback(() => {
     clearAccessToken();
@@ -112,10 +118,10 @@ export default function App() {
     setIsInitialMeasurementLoading(false);
     setHistoryFreshness("initial");
     setDeviceUpdatesConnection("connecting");
-    setMeasurementConnection("connecting");
+    updateMeasurementConnection("connecting");
     setDeviceUpdatesError(null);
     setMeasurementConnectionError(null);
-  }, []);
+  }, [updateMeasurementConnection]);
 
   const loadMeasurementPage = useCallback(async (
     selectedDeviceId: string,
@@ -173,7 +179,7 @@ export default function App() {
             ...current,
             rows: committedPage.results,
           }));
-          setHistoryFreshness("current");
+          setHistoryFreshness(measurementConnectionRef.current === "error" ? "stale" : "current");
           setApiError(null);
         }
         return committedPage;
@@ -269,7 +275,7 @@ export default function App() {
           : latestResult.latest,
         rows: page.results,
       }));
-      setHistoryFreshness("current");
+      setHistoryFreshness(measurementConnectionRef.current === "error" ? "stale" : "current");
       setApiError(null);
     });
   }, [accessToken, loadMeasurementPage]);
@@ -304,7 +310,7 @@ export default function App() {
         setIsPageLoading(false);
         setIsInitialMeasurementLoading(false);
         setHistoryFreshness("initial");
-        setMeasurementConnection("connecting");
+        updateMeasurementConnection("connecting");
         setMeasurementConnectionError(null);
       }
     } catch (error) {
@@ -322,7 +328,7 @@ export default function App() {
       }
       setApiError(error instanceof Error ? error.message : "Could not refresh devices");
     }
-  }, [logout]);
+  }, [logout, updateMeasurementConnection]);
 
   useEffect(() => {
     const restoredToken = restoreAccessToken();
@@ -458,7 +464,7 @@ export default function App() {
     offsetRef.current = 0;
     setDeviceId(selectedDeviceId);
     setOffset(0);
-    setMeasurementConnection("connecting");
+    updateMeasurementConnection("connecting");
     setMeasurementConnectionError(null);
     setApiError(null);
     setMeasurementState(EMPTY_STATE);
@@ -543,7 +549,7 @@ export default function App() {
     let initialStateLoaded = false;
     const pendingNotifications: Measurement[] = [];
     const isCurrent = () => !disposed && selectionGeneration.current === generation;
-    setMeasurementConnection("connecting");
+    updateMeasurementConnection("connecting");
     setMeasurementConnectionError(null);
 
     async function start() {
@@ -571,7 +577,7 @@ export default function App() {
             if (!isCurrent()) {
               return;
             }
-            setMeasurementConnection("live");
+            updateMeasurementConnection("live");
             setMeasurementConnectionError(null);
             const reconnectOffset = offsetRef.current;
             const reconnectOrder = orderRef.current;
@@ -596,8 +602,9 @@ export default function App() {
           },
           (error) => {
             if (isCurrent()) {
-              setMeasurementConnection("error");
+              updateMeasurementConnection("error");
               setMeasurementConnectionError(error.message);
+              setHistoryFreshness("stale");
             }
           },
         );
@@ -607,7 +614,7 @@ export default function App() {
         }
         closeSubscription = close;
         subscriptionEstablished = true;
-        setMeasurementConnection("live");
+        updateMeasurementConnection("live");
         setMeasurementConnectionError(null);
         const initialOffset = offsetRef.current;
         const initialOrder = orderRef.current;
@@ -626,13 +633,18 @@ export default function App() {
           { ...current, latest },
         ));
         setIsInitialMeasurementLoading(false);
+        if (queuedNotifications.length > 0) {
+          measurementNotificationGeneration.current += queuedNotifications.length;
+          setHistoryFreshness("scheduled");
+          scheduleMeasurementRefresh();
+        }
       } catch (error) {
         if (isCurrent()) {
           setIsInitialMeasurementLoading(false);
           if (subscriptionEstablished) {
             setApiError(error instanceof Error ? error.message : "Could not load measurements");
           } else {
-            setMeasurementConnection("error");
+            updateMeasurementConnection("error");
             setMeasurementConnectionError(error instanceof Error ? error.message : "Could not connect to notifications");
             setHistoryFreshness("stale");
           }
@@ -645,7 +657,7 @@ export default function App() {
       disposed = true;
       closeSubscription();
     };
-  }, [accessToken, deviceId, loadMeasurementPage, scheduleMeasurementRefresh]);
+  }, [accessToken, deviceId, loadMeasurementPage, scheduleMeasurementRefresh, updateMeasurementConnection]);
 
   useEffect(() => {
     const range = measurementState.missingRange;

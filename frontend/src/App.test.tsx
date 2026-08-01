@@ -128,6 +128,7 @@ async function logInAndSelect(deviceId = DEVICE_ONE.id) {
 describe("App", () => {
   let notification: (value: Measurement) => void;
   let reconnect: () => void;
+  let measurementConnectionFailure: (error: Error) => void;
   let deviceCreated: () => void;
   let deviceConnectionFailure: (error: Error) => void;
   let deviceReconnect: () => void;
@@ -147,9 +148,10 @@ describe("App", () => {
     api.getLatest.mockResolvedValue(measurement(2));
     api.getMeasurements.mockResolvedValue(measurementPage([measurement(1), measurement(2)]));
     nats.subscribeToMeasurements.mockImplementation(
-      async (_deviceId, _token, onNotification, onReconnect) => {
+      async (_deviceId, _token, onNotification, onReconnect, onError) => {
         notification = onNotification;
         reconnect = onReconnect;
+        measurementConnectionFailure = onError;
         return close;
       },
     );
@@ -328,6 +330,66 @@ describe("App", () => {
       "History up to date",
     );
     expect(screen.getAllByRole("row")).toHaveLength(3);
+  });
+
+  it("keeps history stale after a measurement transport failure until reconnect refresh succeeds", async () => {
+    const firstPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
+    const secondPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(70 - index));
+    api.getLatest.mockResolvedValue(measurement(120));
+    api.getMeasurements.mockResolvedValueOnce(measurementPage(firstPageRows, { total: 120 }));
+    render(<App />);
+    await logInAndSelect();
+    await screen.findByText("Page 1 of 3");
+
+    act(() => measurementConnectionFailure(new Error("Measurement transport lost")));
+
+    expect(screen.getByLabelText("Device connection status")).toHaveTextContent("Attention needed");
+    expect(screen.getByRole("alert")).toHaveTextContent("Connection error: Measurement transport lost");
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "History may be out of date",
+    );
+    expect(screen.getByText("120 measurements")).toBeInTheDocument();
+    expect(screen.getAllByRole("row")).toHaveLength(PAGE_SIZE + 1);
+
+    api.getMeasurements.mockResolvedValueOnce(measurementPage(
+      secondPageRows,
+      { total: 120, offset: PAGE_SIZE },
+    ));
+    fireEvent.click(screen.getByRole("button", { name: /^next$/i }));
+
+    await screen.findByText("Page 2 of 3");
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("70");
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "History may be out of date",
+    );
+
+    const reconnectPage = deferred<MeasurementPage>();
+    api.getLatest.mockClear();
+    api.getMeasurements.mockClear();
+    api.getLatest.mockResolvedValueOnce(measurement(121));
+    api.getMeasurements.mockReturnValueOnce(reconnectPage.promise);
+
+    act(() => reconnect());
+
+    expect(screen.getByLabelText("Device connection status")).toHaveTextContent("Streaming");
+    expect(screen.queryByText(/Measurement transport lost/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "Refreshing history",
+    );
+    expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=${PAGE_SIZE}&order=desc`,
+    );
+
+    await act(async () => {
+      reconnectPage.resolve(measurementPage(secondPageRows, { total: 120, offset: PAGE_SIZE }));
+      await reconnectPage.promise;
+    });
+
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "History up to date",
+    );
   });
 
   it("restores a valid session only after devices and capability both load", async () => {
@@ -1751,18 +1813,55 @@ describe("App", () => {
     render(<App />);
     await logInAndSelect();
     await waitFor(() => expect(nats.subscribeToMeasurements).toHaveBeenCalledOnce());
+    api.getLatest.mockClear();
+    api.getMeasurements.mockClear();
+    api.getLatest.mockResolvedValueOnce(measurement(3));
+    api.getMeasurements.mockResolvedValueOnce(measurementPage(
+      [measurement(3), measurement(2), measurement(1)],
+      { total: 3 },
+    ));
+    vi.useFakeTimers();
 
     act(() => notification(measurement(3)));
     await act(async () => {
       initialLatest.resolve(measurement(2));
-      initialRows.resolve(measurementPage([measurement(1), measurement(2)]));
+      initialRows.resolve(measurementPage([measurement(2), measurement(1)], { total: 2 }));
       await Promise.all([initialLatest.promise, initialRows.promise]);
     });
 
-    await waitFor(() => {
-      expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("3");
-    });
+    expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("3");
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "Refresh scheduled",
+    );
+    expect(screen.getByText("2 measurements")).toBeInTheDocument();
     expect(screen.getAllByRole("row")).toHaveLength(3);
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("2");
+    expect(screen.getAllByRole("row")[2]).toHaveTextContent("1");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(249);
+    });
+    expect(api.getLatest).not.toHaveBeenCalled();
+    expect(api.getMeasurements).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(api.getLatest).toHaveBeenCalledWith(DEVICE_ONE.id, "access-token");
+    expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=0&order=desc`,
+    );
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "History up to date",
+    );
+    expect(screen.getByText("3 measurements")).toBeInTheDocument();
+    expect(screen.getAllByRole("row")).toHaveLength(4);
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("3");
+
+    vi.useRealTimers();
   });
 
   it("closes the old subscription on device changes", async () => {
