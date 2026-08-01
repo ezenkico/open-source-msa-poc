@@ -14,15 +14,14 @@ function measurement(entry_index: number): Measurement {
 
 describe("mergeNotification", () => {
   it.each([
-    ["full ascending", [measurement(1), measurement(2)], 2],
-    ["partial ascending", [measurement(1), measurement(2)], 3],
-    ["full descending", [measurement(2), measurement(1)], 2],
-    ["partial descending", [measurement(2), measurement(1)], 3],
-  ])("updates latest without rewriting a %s page", (_case, rows, capacity) => {
+    ["full ascending", [measurement(1), measurement(2)]],
+    ["partial ascending", [measurement(1), measurement(2)]],
+    ["full descending", [measurement(2), measurement(1)]],
+    ["partial descending", [measurement(2), measurement(1)]],
+  ])("updates latest while leaving the displayed %s page for authoritative refresh", (_case, rows) => {
     const result = mergeNotification(
       { latest: measurement(2), rows, missingRange: null },
       measurement(3),
-      capacity,
     );
 
     expect(result.latest?.entry_index).toBe(3);
@@ -31,15 +30,14 @@ describe("mergeNotification", () => {
   });
 
   it.each([
-    ["full ascending", [measurement(1), measurement(2)], 2],
-    ["partial ascending", [measurement(1), measurement(2)], 3],
-    ["full descending", [measurement(2), measurement(1)], 2],
-    ["partial descending", [measurement(2), measurement(1)], 3],
-  ])("detects a notification gap without rewriting a %s page", (_case, rows, capacity) => {
+    ["full ascending", [measurement(1), measurement(2)]],
+    ["partial ascending", [measurement(1), measurement(2)]],
+    ["full descending", [measurement(2), measurement(1)]],
+    ["partial descending", [measurement(2), measurement(1)]],
+  ])("detects a gap while leaving the displayed %s page for authoritative refresh", (_case, rows) => {
     const result = mergeNotification(
       { latest: measurement(2), rows, missingRange: null },
       measurement(5),
-      capacity,
     );
 
     expect(result.latest?.entry_index).toBe(5);
@@ -56,7 +54,6 @@ describe("mergeNotification", () => {
         missingRange: { afterIndex: 2, throughIndex: 5 },
       },
       measurement(6),
-      50,
     );
 
     expect(result.latest?.entry_index).toBe(6);
@@ -73,7 +70,6 @@ describe("mergeNotification", () => {
         missingRange: { afterIndex: 2, throughIndex: 5 },
       },
       measurement(8),
-      50,
     );
 
     expect(result.latest?.entry_index).toBe(8);
@@ -88,7 +84,7 @@ describe("mergeNotification", () => {
       missingRange: null,
     };
 
-    expect(mergeNotification(state, measurement(5), 10)).toEqual(state);
-    expect(mergeNotification(state, measurement(4), 10)).toEqual(state);
+    expect(mergeNotification(state, measurement(5))).toEqual(state);
+    expect(mergeNotification(state, measurement(4))).toEqual(state);
   });
 });

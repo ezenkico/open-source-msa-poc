@@ -21,7 +21,6 @@ export type MeasurementState = {
 export function mergeNotification(
   state: MeasurementState,
   notification: Measurement,
-  _capacity: number,
 ): MeasurementState {
   if (state.latest && notification.entry_index <= state.latest.entry_index) {
     return state;

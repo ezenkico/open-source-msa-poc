@@ -21,6 +21,7 @@ import {
   type MeasurementState,
 } from "./measurementState";
 import { clearAccessToken, restoreAccessToken, storeAccessToken } from "./session";
+import { useDebouncedCallback } from "./useDebouncedCallback";
 
 export const PAGE_SIZE = 50;
 
@@ -71,6 +72,7 @@ export default function App() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const selectionGeneration = useRef(0);
   const pageRequestGeneration = useRef(0);
+  const pageLoadGeneration = useRef(0);
   const deviceListRequestGeneration = useRef(0);
   const authenticationGeneration = useRef(0);
   const loginAttemptGeneration = useRef(0);
@@ -107,6 +109,8 @@ export default function App() {
     requestedOrder: MeasurementOrder,
     selectedGeneration: number,
   ): Promise<MeasurementPage | null> => {
+    pageLoadGeneration.current += 1;
+
     async function requestPage(targetOffset: number, correctionAttempted: boolean): Promise<MeasurementPage | null> {
       const requestGeneration = ++pageRequestGeneration.current;
       setIsPageLoading(true);
@@ -171,6 +175,54 @@ export default function App() {
 
     return requestPage(requestedOffset, false);
   }, []);
+
+  const refreshSelectedMeasurements = useCallback(() => {
+    const selectedDeviceId = selectedDeviceIdRef.current;
+    const selectedOffset = offsetRef.current;
+    const selectedOrder = orderRef.current;
+    const generation = selectionGeneration.current;
+    if (!accessToken || !selectedDeviceId) {
+      return;
+    }
+
+    const latestRequest = getLatest(selectedDeviceId, accessToken).then(
+      (latest) => ({ latest, status: "fulfilled" as const }),
+      (error: unknown) => ({ error, status: "rejected" as const }),
+    );
+    const pageRequest = loadMeasurementPage(
+      selectedDeviceId,
+      accessToken,
+      selectedOffset,
+      selectedOrder,
+      generation,
+    );
+    const loadGeneration = pageLoadGeneration.current;
+    void Promise.all([
+      latestRequest,
+      pageRequest,
+    ]).then(([latestResult, page]) => {
+      if (
+        !page
+        || selectionGeneration.current !== generation
+        || pageLoadGeneration.current !== loadGeneration
+      ) {
+        return;
+      }
+      if (latestResult.status === "rejected") {
+        setApiError(latestResult.error instanceof Error
+          ? latestResult.error.message
+          : "Could not reload measurements");
+        return;
+      }
+      setMeasurementState((current) => ({ ...current, latest: latestResult.latest }));
+    });
+  }, [accessToken, loadMeasurementPage]);
+
+  const { schedule: scheduleMeasurementRefresh } = useDebouncedCallback(
+    refreshSelectedMeasurements,
+    250,
+    [accessToken, deviceId],
+  );
 
   const refreshDevices = useCallback(async (token: string, authGeneration: number) => {
     const generation = ++deviceListRequestGeneration.current;
@@ -431,7 +483,8 @@ export default function App() {
               if (!initialStateLoaded) {
                 pendingNotifications.push(notification);
               } else {
-                setMeasurementState((current) => mergeNotification(current, notification, PAGE_SIZE));
+                setMeasurementState((current) => mergeNotification(current, notification));
+                scheduleMeasurementRefresh();
               }
             }
           },
@@ -481,7 +534,7 @@ export default function App() {
         pendingNotifications.length = 0;
         initialStateLoaded = true;
         setMeasurementState((current) => queuedNotifications.reduce<MeasurementState>(
-          (state, notification) => mergeNotification(state, notification, PAGE_SIZE),
+          (state, notification) => mergeNotification(state, notification),
           { ...current, latest },
         ));
       } catch (error) {
@@ -496,7 +549,7 @@ export default function App() {
       disposed = true;
       closeSubscription();
     };
-  }, [accessToken, deviceId, loadMeasurementPage]);
+  }, [accessToken, deviceId, loadMeasurementPage, scheduleMeasurementRefresh]);
 
   useEffect(() => {
     const range = measurementState.missingRange;
