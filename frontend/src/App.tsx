@@ -28,6 +28,7 @@ export const PAGE_SIZE = 50;
 
 const EMPTY_STATE: MeasurementState = { latest: null, rows: [], missingRange: null };
 type ConnectionState = "connecting" | "live" | "error";
+type HistoryFreshness = "initial" | "scheduled" | "loading" | "current" | "stale";
 
 function formatTime(timestamp: string): string {
   return new Date(timestamp).toLocaleString();
@@ -71,6 +72,7 @@ export default function App() {
   const [measurementPage, setMeasurementPage] = useState<MeasurementPage | null>(null);
   const [isPageLoading, setIsPageLoading] = useState(false);
   const [isInitialMeasurementLoading, setIsInitialMeasurementLoading] = useState(false);
+  const [historyFreshness, setHistoryFreshness] = useState<HistoryFreshness>("initial");
   const [apiError, setApiError] = useState<string | null>(null);
   const [deviceUpdatesConnection, setDeviceUpdatesConnection] = useState<ConnectionState>("connecting");
   const [measurementConnection, setMeasurementConnection] = useState<ConnectionState>("connecting");
@@ -108,6 +110,7 @@ export default function App() {
     setMeasurementPage(null);
     setIsPageLoading(false);
     setIsInitialMeasurementLoading(false);
+    setHistoryFreshness("initial");
     setDeviceUpdatesConnection("connecting");
     setMeasurementConnection("connecting");
     setDeviceUpdatesError(null);
@@ -127,6 +130,7 @@ export default function App() {
     async function requestPage(targetOffset: number, correctionAttempted: boolean): Promise<MeasurementPage | null> {
       const requestGeneration = ++pageRequestGeneration.current;
       setIsPageLoading(true);
+      setHistoryFreshness("loading");
       setApiError(null);
 
       const isCurrentRequest = () => (
@@ -169,6 +173,7 @@ export default function App() {
             ...current,
             rows: committedPage.results,
           }));
+          setHistoryFreshness("current");
           setApiError(null);
         }
         return committedPage;
@@ -177,6 +182,7 @@ export default function App() {
           if (!commitResult) {
             throw error;
           }
+          setHistoryFreshness("stale");
           setApiError(error instanceof Error ? error.message : "Could not load measurements");
         }
         return null;
@@ -223,6 +229,7 @@ export default function App() {
     const rejectPair = (error: unknown, fallbackMessage: string) => {
       pairFailed = true;
       if (isCurrentPair()) {
+        setHistoryFreshness("stale");
         setApiError(error instanceof Error ? error.message : fallbackMessage);
       }
       return { error, status: "rejected" as const };
@@ -262,6 +269,7 @@ export default function App() {
           : latestResult.latest,
         rows: page.results,
       }));
+      setHistoryFreshness("current");
       setApiError(null);
     });
   }, [accessToken, loadMeasurementPage]);
@@ -295,6 +303,7 @@ export default function App() {
         setMeasurementPage(null);
         setIsPageLoading(false);
         setIsInitialMeasurementLoading(false);
+        setHistoryFreshness("initial");
         setMeasurementConnection("connecting");
         setMeasurementConnectionError(null);
       }
@@ -337,6 +346,7 @@ export default function App() {
         setMeasurementPage(null);
         setIsPageLoading(false);
         setIsInitialMeasurementLoading(false);
+        setHistoryFreshness("initial");
       }
     }).catch((error: unknown) => {
       if (disposed) {
@@ -409,6 +419,7 @@ export default function App() {
       setMeasurementPage(null);
       setIsPageLoading(false);
       setIsInitialMeasurementLoading(false);
+      setHistoryFreshness("initial");
     } catch (error) {
       if (loginAttemptGeneration.current === attemptGeneration) {
         setApiError(error instanceof Error ? error.message : "Login failed");
@@ -454,6 +465,7 @@ export default function App() {
     setMeasurementPage(null);
     setIsPageLoading(false);
     setIsInitialMeasurementLoading(Boolean(selectedDeviceId));
+    setHistoryFreshness("initial");
   }
 
   useEffect(() => {
@@ -527,6 +539,7 @@ export default function App() {
     const generation = selectionGeneration.current;
     let disposed = false;
     let closeSubscription: () => void = () => {};
+    let subscriptionEstablished = false;
     let initialStateLoaded = false;
     const pendingNotifications: Measurement[] = [];
     const isCurrent = () => !disposed && selectionGeneration.current === generation;
@@ -549,6 +562,7 @@ export default function App() {
               } else {
                 measurementNotificationGeneration.current += 1;
                 setMeasurementState((current) => mergeNotification(current, notification));
+                setHistoryFreshness("scheduled");
                 scheduleMeasurementRefresh();
               }
             }
@@ -592,6 +606,7 @@ export default function App() {
           return;
         }
         closeSubscription = close;
+        subscriptionEstablished = true;
         setMeasurementConnection("live");
         setMeasurementConnectionError(null);
         const initialOffset = offsetRef.current;
@@ -613,9 +628,14 @@ export default function App() {
         setIsInitialMeasurementLoading(false);
       } catch (error) {
         if (isCurrent()) {
-          setMeasurementConnection("error");
-          setMeasurementConnectionError(error instanceof Error ? error.message : "Could not connect to notifications");
           setIsInitialMeasurementLoading(false);
+          if (subscriptionEstablished) {
+            setApiError(error instanceof Error ? error.message : "Could not load measurements");
+          } else {
+            setMeasurementConnection("error");
+            setMeasurementConnectionError(error instanceof Error ? error.message : "Could not connect to notifications");
+            setHistoryFreshness("stale");
+          }
         }
       }
     }
@@ -985,7 +1005,9 @@ export default function App() {
                   <Panel className="p-5">
                     <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">History total</p>
                     <p className="mt-3 text-2xl font-semibold tabular-nums text-white">
-                      {isInitialMeasurementLoading ? "Loading total…" : `${measurementPage?.total ?? 0} measurements`}
+                      {measurementPage
+                        ? `${measurementPage.total} measurements`
+                        : historyFreshness === "stale" ? "Total unavailable" : "Loading total…"}
                     </p>
                   </Panel>
                 </div>
@@ -996,9 +1018,15 @@ export default function App() {
                       <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Authoritative log</p>
                       <h2 className="mt-1 text-lg font-semibold text-white">Measurement history</h2>
                       <p aria-label="Measurement history status" aria-live="polite" className="mt-1 text-xs text-slate-500" role="status">
-                        {isInitialMeasurementLoading && measurementConnection === "connecting"
+                        {historyFreshness === "initial"
                           ? "Connecting to telemetry…"
-                          : isPageLoading ? "Refreshing history…" : "History up to date"}
+                          : historyFreshness === "scheduled"
+                            ? "Refresh scheduled…"
+                            : historyFreshness === "loading"
+                              ? "Refreshing history…"
+                              : historyFreshness === "stale"
+                                ? measurementPage ? "History may be out of date" : "History unavailable"
+                                : "History up to date"}
                       </p>
                     </div>
                     <Field className="w-full sm:w-44">
@@ -1026,7 +1054,13 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/80">
-                        {isInitialMeasurementLoading ? (
+                        {!measurementPage && historyFreshness === "stale" ? (
+                          <tr>
+                            <td className="px-5 py-12 text-center text-slate-500" colSpan={5}>
+                              Measurement history unavailable.
+                            </td>
+                          </tr>
+                        ) : !measurementPage ? (
                           <tr>
                             <td className="px-5 py-12 text-center text-slate-500" colSpan={5}>
                               Loading measurements…

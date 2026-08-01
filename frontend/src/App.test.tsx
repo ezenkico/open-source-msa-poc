@@ -292,6 +292,44 @@ describe("App", () => {
     );
   });
 
+  it("reports an initial page failure without presenting an empty current history", async () => {
+    api.getMeasurements.mockRejectedValueOnce(new Error("Initial history unavailable"));
+    render(<App />);
+    await logInAndSelect();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("API error: Initial history unavailable");
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "History unavailable",
+    );
+    expect(screen.getByText("Measurement history unavailable.")).toBeInTheDocument();
+    expect(screen.getByText("Total unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("No measurements available for this device.")).not.toBeInTheDocument();
+    expect(screen.queryByText("0 measurements")).not.toBeInTheDocument();
+  });
+
+  it("keeps notification transport live when the initial latest API read fails", async () => {
+    const failedLatest = deferred<Measurement | null>();
+    api.getLatest.mockReturnValueOnce(failedLatest.promise);
+    render(<App />);
+    await logInAndSelect();
+
+    await waitFor(() => expect(nats.subscribeToMeasurements).toHaveBeenCalledOnce());
+    expect(screen.getByLabelText("Device connection status")).toHaveTextContent("Streaming");
+
+    await act(async () => {
+      failedLatest.reject(new Error("Latest API unavailable"));
+      await failedLatest.promise.catch(() => undefined);
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("API error: Latest API unavailable");
+    expect(screen.getByLabelText("Device connection status")).toHaveTextContent("Streaming");
+    expect(screen.queryByText(/Connection error: Latest API unavailable/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "History up to date",
+    );
+    expect(screen.getAllByRole("row")).toHaveLength(3);
+  });
+
   it("restores a valid session only after devices and capability both load", async () => {
     const listedDevices = deferred<typeof DEVICE_ONE[]>();
     const currentUser = deferred<{ can_add_devices: boolean }>();
@@ -1057,6 +1095,40 @@ describe("App", () => {
       });
     }
 
+    it("reports scheduled, loading, and current history freshness through a live refresh", async () => {
+      const refreshedLatest = deferred<Measurement | null>();
+      const refreshedPage = deferred<MeasurementPage>();
+      render(<App />);
+      await logInAndSelect();
+      await waitForInitialMeasurements();
+      api.getLatest.mockClear();
+      api.getMeasurements.mockClear();
+      api.getLatest.mockReturnValueOnce(refreshedLatest.promise);
+      api.getMeasurements.mockReturnValueOnce(refreshedPage.promise);
+      vi.useFakeTimers();
+
+      act(() => notification(measurement(3)));
+
+      expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+        "Refresh scheduled",
+      );
+
+      await advanceTimersByTime(250);
+
+      expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+        "Refreshing history",
+      );
+      await act(async () => {
+        refreshedLatest.resolve(measurement(3));
+        refreshedPage.resolve(measurementPage([measurement(3), measurement(2), measurement(1)]));
+        await Promise.all([refreshedLatest.promise, refreshedPage.promise]);
+      });
+
+      expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+        "History up to date",
+      );
+    });
+
     it("updates latest immediately but keeps rows stable only during the 250 ms debounce window", async () => {
       render(<App />);
       await logInAndSelect();
@@ -1261,9 +1333,15 @@ describe("App", () => {
       vi.useFakeTimers();
 
       act(() => notification(measurement(121)));
+      expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+        "Refresh scheduled",
+      );
       await advanceTimersByTime(250);
       expect(api.getLatest).toHaveBeenCalledOnce();
       expect(api.getMeasurements).toHaveBeenCalledOnce();
+      expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+        "Refreshing history",
+      );
       await act(async () => {
         failedRefresh.reject(new Error("live refresh unavailable"));
         await failedRefresh.promise.catch(() => undefined);
@@ -1274,6 +1352,9 @@ describe("App", () => {
       expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
       expect(screen.getAllByRole("row")).toHaveLength(PAGE_SIZE + 1);
       expect(screen.getAllByRole("row")[1]).toHaveTextContent("120");
+      expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+        "History may be out of date",
+      );
 
       api.getLatest.mockClear();
       api.getMeasurements.mockClear();
@@ -1288,6 +1369,9 @@ describe("App", () => {
       expect(screen.queryByText(/live refresh unavailable/i)).not.toBeInTheDocument();
       expect(screen.getAllByRole("row")).toHaveLength(2);
       expect(screen.getAllByRole("row")[1]).toHaveTextContent("122");
+      expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+        "History up to date",
+      );
     });
 
     it("reports a page failure without waiting for latest and blocks its late success", async () => {
