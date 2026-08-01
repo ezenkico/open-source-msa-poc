@@ -608,9 +608,18 @@ export default function App() {
         setMeasurementConnectionError(null);
         const initialOffset = offsetRef.current;
         const initialOrder = orderRef.current;
+        const initialLatest = getLatest(deviceId, token);
+        const initialPage = loadMeasurementPage(
+          deviceId,
+          token,
+          initialOffset,
+          initialOrder,
+          generation,
+        );
+        const initialLoadGeneration = pageLoadGeneration.current;
         const [latestResult, pageResult] = await Promise.allSettled([
-          getLatest(deviceId, token),
-          loadMeasurementPage(deviceId, token, initialOffset, initialOrder, generation),
+          initialLatest,
+          initialPage,
         ]);
         if (!isCurrent()) {
           return;
@@ -618,28 +627,30 @@ export default function App() {
         const queuedNotifications = pendingNotifications.splice(0);
         pendingNotifications.length = 0;
         initialStateLoaded = true;
-        setMeasurementState((current) => queuedNotifications.reduce<MeasurementState>(
-          (state, notification) => mergeNotification(state, notification),
-          {
-            ...current,
-            latest: latestResult.status === "fulfilled" ? latestResult.value : current.latest,
-          },
-        ));
         setIsInitialMeasurementLoading(false);
-        if (latestResult.status === "rejected") {
-          setApiError(
-            latestResult.reason instanceof Error
-              ? latestResult.reason.message
-              : "Could not load measurements",
-          );
-        }
-        if (pageResult.status === "rejected") {
-          setHistoryFreshness("stale");
-          setApiError(
-            pageResult.reason instanceof Error
-              ? pageResult.reason.message
-              : "Could not load measurements",
-          );
+        if (pageLoadGeneration.current === initialLoadGeneration) {
+          setMeasurementState((current) => queuedNotifications.reduce<MeasurementState>(
+            (state, notification) => mergeNotification(state, notification),
+            {
+              ...current,
+              latest: latestResult.status === "fulfilled" ? latestResult.value : current.latest,
+            },
+          ));
+          if (latestResult.status === "rejected") {
+            setApiError(
+              latestResult.reason instanceof Error
+                ? latestResult.reason.message
+                : "Could not load measurements",
+            );
+          }
+          if (pageResult.status === "rejected") {
+            setHistoryFreshness("stale");
+            setApiError(
+              pageResult.reason instanceof Error
+                ? pageResult.reason.message
+                : "Could not load measurements",
+            );
+          }
         }
         if (queuedNotifications.length > 0) {
           measurementNotificationGeneration.current += queuedNotifications.length;

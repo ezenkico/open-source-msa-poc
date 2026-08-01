@@ -481,6 +481,67 @@ describe("App", () => {
     expect(screen.queryByText(/stale reconnect latest failed/i)).not.toBeInTheDocument();
   });
 
+  it("does not let an older initial latest result regress a successful reconnect refresh", async () => {
+    const initialLatest = deferred<Measurement | null>();
+    const initialPage = deferred<MeasurementPage>();
+    api.getLatest
+      .mockReturnValueOnce(initialLatest.promise)
+      .mockResolvedValueOnce(measurement(10));
+    api.getMeasurements
+      .mockReturnValueOnce(initialPage.promise)
+      .mockResolvedValueOnce(measurementPage([measurement(10)], { total: 10 }));
+    render(<App />);
+    await logInAndSelect();
+    await waitFor(() => expect(nats.subscribeToMeasurements).toHaveBeenCalledOnce());
+    await waitFor(() => {
+      expect(api.getLatest).toHaveBeenCalledOnce();
+      expect(api.getMeasurements).toHaveBeenCalledOnce();
+    });
+
+    act(() => reconnect());
+    await screen.findByText("10 measurements");
+    expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 10");
+
+    await act(async () => {
+      initialLatest.resolve(measurement(2));
+      initialPage.resolve(measurementPage([measurement(2), measurement(1)], { total: 2 }));
+      await Promise.all([initialLatest.promise, initialPage.promise]);
+    });
+
+    expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 10");
+    expect(screen.getByText("10 measurements")).toBeInTheDocument();
+  });
+
+  it("does not surface an older initial latest failure after a successful reconnect refresh", async () => {
+    const initialLatest = deferred<Measurement | null>();
+    const initialPage = deferred<MeasurementPage>();
+    api.getLatest
+      .mockReturnValueOnce(initialLatest.promise)
+      .mockResolvedValueOnce(measurement(10));
+    api.getMeasurements
+      .mockReturnValueOnce(initialPage.promise)
+      .mockResolvedValueOnce(measurementPage([measurement(10)], { total: 10 }));
+    render(<App />);
+    await logInAndSelect();
+    await waitFor(() => expect(nats.subscribeToMeasurements).toHaveBeenCalledOnce());
+    await waitFor(() => {
+      expect(api.getLatest).toHaveBeenCalledOnce();
+      expect(api.getMeasurements).toHaveBeenCalledOnce();
+    });
+
+    act(() => reconnect());
+    await screen.findByText("10 measurements");
+
+    await act(async () => {
+      initialLatest.reject(new Error("stale initial latest failed"));
+      initialPage.resolve(measurementPage([measurement(2), measurement(1)], { total: 2 }));
+      await Promise.allSettled([initialLatest.promise, initialPage.promise]);
+    });
+
+    expect(screen.queryByText(/stale initial latest failed/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 10");
+  });
+
   it("restores a valid session only after devices and capability both load", async () => {
     const listedDevices = deferred<typeof DEVICE_ONE[]>();
     const currentUser = deferred<{ can_add_devices: boolean }>();
