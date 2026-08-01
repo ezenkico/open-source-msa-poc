@@ -8,11 +8,21 @@ function classes(base: string, className?: string): string {
   return className ? `${base} ${className}` : base;
 }
 
-export function Panel({ className, ...props }: HTMLAttributes<HTMLElement>) {
+type PanelProps = HTMLAttributes<HTMLElement> & {
+  borderTone?: "default" | "cyan" | "amber";
+};
+
+const panelBorderClasses: Record<NonNullable<PanelProps["borderTone"]>, string> = {
+  default: "border-slate-800/90",
+  cyan: "border-cyan-400/20",
+  amber: "border-amber-400/20",
+};
+
+export function Panel({ borderTone = "default", className, ...props }: PanelProps) {
   return (
     <section
       className={classes(
-        "rounded-2xl border border-slate-800/90 bg-slate-900/80 shadow-xl shadow-slate-950/20",
+        `rounded-2xl border bg-slate-900/80 shadow-xl shadow-slate-950/20 ${panelBorderClasses[borderTone]}`,
         className,
       )}
       {...props}

@@ -5,6 +5,8 @@ import type { Measurement } from "./measurementState";
 
 const nats = vi.hoisted(() => ({
   connect: vi.fn(),
+  DebugEvents: { Reconnecting: "reconnecting" },
+  Events: { Disconnect: "disconnect", Reconnect: "reconnect" },
   StringCodec: vi.fn(),
 }));
 
@@ -177,18 +179,51 @@ describe("NATS adapter", () => {
     expect(onDeviceCreated).not.toHaveBeenCalled();
   });
 
-  it("signals reconnection and closes the device-created subscription", async () => {
-    const connection = configureConnection([], [{ type: "reconnect" }]);
-    const onReconnect = vi.fn();
+  it("surfaces measurement disconnect, reconnecting, and reconnect lifecycle events", async () => {
+    configureConnection([], [
+      { type: nats.Events.Disconnect, data: "server-a" },
+      { type: nats.DebugEvents.Reconnecting, data: 1 },
+      { type: nats.Events.Reconnect, data: "server-b" },
+    ]);
+    const onLifecycle = vi.fn();
+
+    await subscribeToMeasurements(
+      "device-1",
+      "nats-token",
+      vi.fn(),
+      onLifecycle,
+      vi.fn(),
+    );
+
+    await waitFor(() => expect(onLifecycle).toHaveBeenCalledTimes(3));
+    expect(onLifecycle.mock.calls).toEqual([
+      [nats.Events.Disconnect],
+      [nats.DebugEvents.Reconnecting],
+      [nats.Events.Reconnect],
+    ]);
+  });
+
+  it("surfaces device-creation lifecycle events and closes the subscription", async () => {
+    const connection = configureConnection([], [
+      { type: nats.Events.Disconnect, data: "server-a" },
+      { type: nats.DebugEvents.Reconnecting, data: 1 },
+      { type: nats.Events.Reconnect, data: "server-b" },
+    ]);
+    const onLifecycle = vi.fn();
 
     const cleanup = await subscribeToDeviceCreations(
       "nats-token",
       vi.fn(),
-      onReconnect,
+      onLifecycle,
       vi.fn(),
     );
 
-    await waitFor(() => expect(onReconnect).toHaveBeenCalledOnce());
+    await waitFor(() => expect(onLifecycle).toHaveBeenCalledTimes(3));
+    expect(onLifecycle.mock.calls).toEqual([
+      [nats.Events.Disconnect],
+      [nats.DebugEvents.Reconnecting],
+      [nats.Events.Reconnect],
+    ]);
 
     cleanup();
 

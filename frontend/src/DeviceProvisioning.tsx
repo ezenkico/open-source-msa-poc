@@ -138,7 +138,7 @@ function EnabledDeviceProvisioning({
       )}
 
       {createdDevice && (
-        <Panel aria-labelledby="created-device-heading" className="mt-5 border-amber-400/20 bg-slate-950/60 p-4">
+        <Panel aria-labelledby="created-device-heading" borderTone="amber" className="mt-5 bg-slate-950/60 p-4">
           <h3 className="font-semibold text-white" id="created-device-heading">Device credentials</h3>
           <div
             aria-label="One-time credential warning"

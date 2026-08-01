@@ -69,6 +69,7 @@ const DEVICE_ONE = {
 const DEVICE_TWO = { ...DEVICE_ONE, id: "b2222222-2222-4222-8222-222222222222", name: "Pump" };
 const DEVICE_THREE = { ...DEVICE_ONE, id: "c3333333-3333-4333-8333-333333333333", name: "Chiller" };
 const CREATED_DEVICE: CreatedDevice = { ...DEVICE_THREE, key: "one-time-key" };
+type NatsLifecycleStatus = "disconnect" | "reconnecting" | "reconnect";
 
 function measurement(entry_index: number, device_id = DEVICE_ONE.id): Measurement {
   return {
@@ -127,10 +128,12 @@ async function logInAndSelect(deviceId = DEVICE_ONE.id) {
 
 describe("App", () => {
   let notification: (value: Measurement) => void;
+  let measurementLifecycle: (status: NatsLifecycleStatus) => void;
   let reconnect: () => void;
   let measurementConnectionFailure: (error: Error) => void;
   let deviceCreated: () => void;
   let deviceConnectionFailure: (error: Error) => void;
+  let deviceLifecycle: (status: NatsLifecycleStatus) => void;
   let deviceReconnect: () => void;
   let close: ReturnType<typeof vi.fn>;
   let closeDeviceCreations: ReturnType<typeof vi.fn>;
@@ -150,7 +153,8 @@ describe("App", () => {
     nats.subscribeToMeasurements.mockImplementation(
       async (_deviceId, _token, onNotification, onReconnect, onError) => {
         notification = onNotification;
-        reconnect = onReconnect;
+        measurementLifecycle = onReconnect;
+        reconnect = () => onReconnect("reconnect");
         measurementConnectionFailure = onError;
         return close;
       },
@@ -159,7 +163,8 @@ describe("App", () => {
       async (_token, onDeviceCreated, onReconnect, onError) => {
         deviceCreated = onDeviceCreated;
         deviceConnectionFailure = onError;
-        deviceReconnect = onReconnect;
+        deviceLifecycle = onReconnect;
+        deviceReconnect = () => onReconnect("reconnect");
         return closeDeviceCreations;
       },
     );
@@ -207,7 +212,8 @@ describe("App", () => {
       async (_token, onDeviceCreated, onReconnect, onError) => {
         deviceCreated = onDeviceCreated;
         deviceConnectionFailure = onError;
-        deviceReconnect = onReconnect;
+        deviceLifecycle = onReconnect;
+        deviceReconnect = () => onReconnect("reconnect");
         return subscriptionReady.promise;
       },
     );
@@ -222,6 +228,13 @@ describe("App", () => {
       await subscriptionReady.promise;
     });
     expect(connection).toHaveTextContent("Live");
+
+    act(() => deviceLifecycle("disconnect"));
+    expect(connection).toHaveTextContent("Connecting");
+    act(() => deviceLifecycle("reconnecting"));
+    expect(connection).toHaveTextContent("Connecting");
+    act(() => deviceReconnect());
+    await waitFor(() => expect(connection).toHaveTextContent("Live"));
 
     act(() => deviceConnectionFailure(new Error("Device updates disconnected")));
     expect(connection).toHaveTextContent("Connection issue");
@@ -422,6 +435,54 @@ describe("App", () => {
     );
   });
 
+  it("marks history stale on NATS disconnect lifecycle and restores it after reconnect", async () => {
+    const firstPageRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
+    api.getLatest.mockResolvedValueOnce(measurement(120));
+    api.getMeasurements.mockResolvedValueOnce(measurementPage(firstPageRows, { total: 120 }));
+    render(<App />);
+    await logInAndSelect();
+    await screen.findByText("Page 1 of 3");
+    api.getLatest.mockClear();
+    api.getMeasurements.mockClear();
+
+    act(() => measurementLifecycle("disconnect"));
+
+    expect(screen.getByLabelText("Device connection status")).toHaveTextContent("Connecting");
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "History may be out of date",
+    );
+    expect(api.getLatest).not.toHaveBeenCalled();
+    expect(api.getMeasurements).not.toHaveBeenCalled();
+
+    act(() => measurementLifecycle("reconnecting"));
+
+    expect(screen.getByLabelText("Device connection status")).toHaveTextContent("Connecting");
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "History may be out of date",
+    );
+    expect(api.getLatest).not.toHaveBeenCalled();
+    expect(api.getMeasurements).not.toHaveBeenCalled();
+
+    api.getLatest.mockResolvedValueOnce(measurement(121));
+    api.getMeasurements.mockResolvedValueOnce(measurementPage(
+      [measurement(121), ...firstPageRows.slice(0, PAGE_SIZE - 1)],
+      { total: 121 },
+    ));
+    act(() => measurementLifecycle("reconnect"));
+
+    expect(screen.getByLabelText("Device connection status")).toHaveTextContent("Streaming");
+    await waitFor(() => expect(screen.getByText("121 measurements")).toBeInTheDocument());
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "History up to date",
+    );
+    expect(api.getLatest).toHaveBeenCalledWith(DEVICE_ONE.id, "access-token");
+    expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=0&order=desc`,
+    );
+  });
+
   it("does not let a stale reconnect latest result overwrite a newer notification", async () => {
     const staleReconnectLatest = deferred<Measurement | null>();
     render(<App />);
@@ -542,6 +603,66 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 10");
   });
 
+  it("activates later notifications after reconnect succeeds while the initial reads remain pending", async () => {
+    const initialLatest = deferred<Measurement | null>();
+    const initialPage = deferred<MeasurementPage>();
+    api.getLatest
+      .mockReturnValueOnce(initialLatest.promise)
+      .mockResolvedValueOnce(measurement(3))
+      .mockResolvedValueOnce(measurement(4));
+    api.getMeasurements
+      .mockReturnValueOnce(initialPage.promise)
+      .mockResolvedValueOnce(measurementPage(
+        [measurement(3), measurement(2), measurement(1)],
+        { total: 3 },
+      ))
+      .mockResolvedValueOnce(measurementPage(
+        [measurement(4), measurement(3), measurement(2), measurement(1)],
+        { total: 4 },
+      ));
+    render(<App />);
+    await logInAndSelect();
+    await waitFor(() => {
+      expect(api.getLatest).toHaveBeenCalledOnce();
+      expect(api.getMeasurements).toHaveBeenCalledOnce();
+    });
+
+    act(() => reconnect());
+
+    expect(await screen.findByText("3 measurements")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "History up to date",
+    );
+    api.getLatest.mockClear();
+    api.getMeasurements.mockClear();
+    vi.useFakeTimers();
+
+    act(() => notification(measurement(4)));
+
+    expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 4");
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "Refresh scheduled",
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(249);
+    });
+    expect(api.getLatest).not.toHaveBeenCalled();
+    expect(api.getMeasurements).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(api.getLatest).toHaveBeenCalledWith(DEVICE_ONE.id, "access-token");
+    expect(api.getMeasurements).toHaveBeenCalledWith(
+      DEVICE_ONE.id,
+      "access-token",
+      `limit=${PAGE_SIZE}&offset=0&order=desc`,
+    );
+    expect(screen.getByText("4 measurements")).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
   it("merges a queued notification after reconnect supersedes the initial page", async () => {
     const initialLatest = deferred<Measurement | null>();
     const initialPage = deferred<MeasurementPage>();
@@ -558,7 +679,10 @@ describe("App", () => {
 
     act(() => reconnect());
     await screen.findByText("2 measurements");
-    expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 2");
+    expect(screen.getByRole("heading", { name: /latest measurement/i })).toHaveTextContent("temperature 3");
+    expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
+      "Refresh scheduled",
+    );
 
     await act(async () => {
       initialLatest.resolve(measurement(2));
@@ -1006,6 +1130,30 @@ describe("App", () => {
 
     const label = screen.getByText("Device ID:", { selector: "strong" });
     expect(label.parentElement).toHaveTextContent("Device ID: a1111111-1111-4111-8111-111111111111");
+  });
+
+  it("renders full device IDs with high-contrast normal-text utilities", async () => {
+    render(<App />);
+    await logInAndSelect();
+
+    const navigation = screen.getByRole("navigation", { name: "Devices" });
+    const selectedDeviceButton = within(navigation).getByRole("button", {
+      name: `Select ${DEVICE_ONE.name} device ${DEVICE_ONE.id}`,
+    });
+    const unselectedDeviceButton = within(navigation).getByRole("button", {
+      name: `Select ${DEVICE_TWO.name} device ${DEVICE_TWO.id}`,
+    });
+    expect(within(selectedDeviceButton).getByText(DEVICE_ONE.id)).toHaveClass("text-cyan-200");
+    expect(within(selectedDeviceButton).getByText(DEVICE_ONE.id)).not.toHaveClass("text-cyan-200/70");
+    expect(within(unselectedDeviceButton).getByText(DEVICE_TWO.id)).toHaveClass("text-slate-300");
+
+    const workspace = screen.getByRole("main");
+    const workspaceDeviceIds = within(workspace).getAllByText(DEVICE_ONE.id, { exact: true });
+    expect(workspaceDeviceIds).toHaveLength(2);
+    workspaceDeviceIds.forEach((deviceId) => expect(deviceId).toHaveClass("text-slate-300"));
+    const deviceIdLabel = within(workspace).getByText("Device ID:", { selector: "strong" });
+    expect(deviceIdLabel.parentElement).toHaveClass("text-slate-300");
+    expect(screen.getByLabelText("Selected device")).toHaveClass("text-slate-100");
   });
 
   it("does not show selected-device ID text while the placeholder is selected", async () => {
@@ -1508,6 +1656,112 @@ describe("App", () => {
       expect(screen.getByRole("status", { name: "Measurement history status" })).toHaveTextContent(
         "History up to date",
       );
+    });
+
+    it("refreshes a pending Next target and ignores its older response", async () => {
+      const pendingNext = deferred<MeasurementPage>();
+      const initialRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
+      const ascendingRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(index + 1));
+      const refreshedRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(index + 51));
+      api.getLatest
+        .mockResolvedValueOnce(measurement(120))
+        .mockResolvedValueOnce(measurement(121));
+      api.getMeasurements
+        .mockResolvedValueOnce(measurementPage(initialRows, { total: 120 }))
+        .mockResolvedValueOnce(measurementPage(ascendingRows, { total: 120, order: "asc" }))
+        .mockReturnValueOnce(pendingNext.promise)
+        .mockResolvedValueOnce(measurementPage(
+          refreshedRows,
+          { total: 160, offset: PAGE_SIZE, order: "asc" },
+        ));
+      render(<App />);
+      await logInAndSelect();
+      await screen.findByText("Page 1 of 3");
+      fireEvent.change(screen.getByLabelText(/measurement order/i), { target: { value: "asc" } });
+      await screen.findByText("Page 1 of 3");
+      api.getLatest.mockClear();
+      api.getMeasurements.mockClear();
+      vi.useFakeTimers();
+
+      fireEvent.click(screen.getByRole("button", { name: /^next$/i }));
+      act(() => notification(measurement(121)));
+      await advanceTimersByTime(250);
+
+      expect(api.getMeasurements).toHaveBeenCalledTimes(2);
+      expect(api.getMeasurements).toHaveBeenNthCalledWith(
+        2,
+        DEVICE_ONE.id,
+        "access-token",
+        `limit=${PAGE_SIZE}&offset=${PAGE_SIZE}&order=asc`,
+      );
+      expect(screen.getByText("Page 2 of 4")).toBeInTheDocument();
+      expect(screen.getAllByRole("row")[1]).toHaveTextContent("51");
+
+      await act(async () => {
+        pendingNext.resolve(measurementPage(
+          [measurement(777)],
+          { total: 120, offset: PAGE_SIZE, order: "asc" },
+        ));
+        await pendingNext.promise;
+      });
+
+      expect(screen.getByText("Page 2 of 4")).toBeInTheDocument();
+      expect(screen.queryByText("777")).not.toBeInTheDocument();
+    });
+
+    it("refreshes a pending Previous target and ignores its older response", async () => {
+      const pendingPrevious = deferred<MeasurementPage>();
+      const initialRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(120 - index));
+      const firstAscendingRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(index + 1));
+      const secondAscendingRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(index + 51));
+      const refreshedRows = Array.from({ length: PAGE_SIZE }, (_, index) => measurement(index + 1));
+      api.getLatest
+        .mockResolvedValueOnce(measurement(120))
+        .mockResolvedValueOnce(measurement(121));
+      api.getMeasurements
+        .mockResolvedValueOnce(measurementPage(initialRows, { total: 120 }))
+        .mockResolvedValueOnce(measurementPage(firstAscendingRows, { total: 120, order: "asc" }))
+        .mockResolvedValueOnce(measurementPage(
+          secondAscendingRows,
+          { total: 120, offset: PAGE_SIZE, order: "asc" },
+        ))
+        .mockReturnValueOnce(pendingPrevious.promise)
+        .mockResolvedValueOnce(measurementPage(refreshedRows, { total: 80, order: "asc" }));
+      render(<App />);
+      await logInAndSelect();
+      await screen.findByText("Page 1 of 3");
+      fireEvent.change(screen.getByLabelText(/measurement order/i), { target: { value: "asc" } });
+      await screen.findByText("Page 1 of 3");
+      fireEvent.click(screen.getByRole("button", { name: /^next$/i }));
+      await screen.findByText("Page 2 of 3");
+      api.getLatest.mockClear();
+      api.getMeasurements.mockClear();
+      vi.useFakeTimers();
+
+      fireEvent.click(screen.getByRole("button", { name: /^previous$/i }));
+      act(() => notification(measurement(121)));
+      await advanceTimersByTime(250);
+
+      expect(api.getMeasurements).toHaveBeenCalledTimes(2);
+      expect(api.getMeasurements).toHaveBeenNthCalledWith(
+        2,
+        DEVICE_ONE.id,
+        "access-token",
+        `limit=${PAGE_SIZE}&offset=0&order=asc`,
+      );
+      expect(screen.getByText("Page 1 of 2")).toBeInTheDocument();
+      expect(screen.getAllByRole("row")[1]).toHaveTextContent("1");
+
+      await act(async () => {
+        pendingPrevious.resolve(measurementPage(
+          [measurement(777)],
+          { total: 120, offset: 0, order: "asc" },
+        ));
+        await pendingPrevious.promise;
+      });
+
+      expect(screen.getByText("Page 1 of 2")).toBeInTheDocument();
+      expect(screen.queryByText("777")).not.toBeInTheDocument();
     });
 
     it("coalesces three notifications inside 250 ms into one additional refresh", async () => {

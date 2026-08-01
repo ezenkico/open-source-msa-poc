@@ -16,6 +16,21 @@ describe("dashboard UI primitives", () => {
     expect(panel).toHaveTextContent("Current telemetry");
   });
 
+  it.each([
+    ["cyan", "border-cyan-400/20"],
+    ["amber", "border-amber-400/20"],
+  ] as const)("gives a %s Panel exactly one border-color utility", (borderTone, borderClass) => {
+    render(
+      <Panel aria-label={`${borderTone} telemetry`} borderTone={borderTone}>
+        Current telemetry
+      </Panel>,
+    );
+
+    const panel = screen.getByRole("region", { name: `${borderTone} telemetry` });
+    expect(panel).toHaveClass("border", borderClass);
+    expect(panel).not.toHaveClass("border-slate-800/90");
+  });
+
   it("passes accessible labels and custom classes through StatusBadge", () => {
     render(
       <StatusBadge appearance="live" aria-label="Connection status" className="custom-badge">

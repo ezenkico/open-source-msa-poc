@@ -1,10 +1,11 @@
-import { connect, StringCodec } from "nats.ws";
+import { connect, DebugEvents, Events, StringCodec } from "nats.ws";
 import type { Device } from "./api";
 import type { Measurement } from "./measurementState";
 
 type OnMeasurement = (measurement: Measurement) => void;
 type OnDeviceCreated = () => void;
-type OnReconnect = () => void;
+export type NatsLifecycleStatus = Events.Disconnect | DebugEvents.Reconnecting | Events.Reconnect;
+type OnLifecycle = (status: NatsLifecycleStatus) => void;
 type OnError = (error: Error) => void;
 
 function isMeasurement(value: unknown): value is Measurement {
@@ -36,7 +37,7 @@ export async function subscribeToMeasurements(
   deviceId: string,
   token: string,
   onMeasurement: OnMeasurement,
-  onReconnect: OnReconnect,
+  onLifecycle: OnLifecycle,
   onError: OnError,
 ): Promise<() => void> {
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
@@ -65,8 +66,12 @@ export async function subscribeToMeasurements(
   void (async () => {
     try {
       for await (const status of connection.status()) {
-        if (status.type === "reconnect") {
-          onReconnect();
+        if (
+          status.type === Events.Disconnect
+          || status.type === DebugEvents.Reconnecting
+          || status.type === Events.Reconnect
+        ) {
+          onLifecycle(status.type);
         }
       }
     } catch (error) {
@@ -86,7 +91,7 @@ export async function subscribeToMeasurements(
 export async function subscribeToDeviceCreations(
   token: string,
   onDeviceCreated: OnDeviceCreated,
-  onReconnect: OnReconnect,
+  onLifecycle: OnLifecycle,
   onError: OnError,
 ): Promise<() => void> {
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
@@ -116,8 +121,12 @@ export async function subscribeToDeviceCreations(
   void (async () => {
     try {
       for await (const status of connection.status()) {
-        if (status.type === "reconnect") {
-          onReconnect();
+        if (
+          status.type === Events.Disconnect
+          || status.type === DebugEvents.Reconnecting
+          || status.type === Events.Reconnect
+        ) {
+          onLifecycle(status.type);
         }
       }
     } catch (error) {

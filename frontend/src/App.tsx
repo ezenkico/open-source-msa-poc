@@ -14,7 +14,11 @@ import {
   type MeasurementPage,
 } from "./api";
 import DeviceProvisioning from "./DeviceProvisioning";
-import { subscribeToDeviceCreations, subscribeToMeasurements } from "./nats";
+import {
+  subscribeToDeviceCreations,
+  subscribeToMeasurements,
+  type NatsLifecycleStatus,
+} from "./nats";
 import {
   mergeNotification,
   type Measurement,
@@ -89,6 +93,7 @@ export default function App() {
   const loginAttemptGeneration = useRef(0);
   const selectedDeviceIdRef = useRef("");
   const offsetRef = useRef(0);
+  const pendingOffsetRef = useRef<number | null>(null);
   const orderRef = useRef<MeasurementOrder>("desc");
   const measurementConnectionRef = useRef<ConnectionState>("connecting");
 
@@ -106,6 +111,7 @@ export default function App() {
     loginAttemptGeneration.current += 1;
     selectedDeviceIdRef.current = "";
     offsetRef.current = 0;
+    pendingOffsetRef.current = null;
     orderRef.current = "desc";
     setAccessToken(null);
     setDevices([]);
@@ -174,6 +180,7 @@ export default function App() {
           ? { ...page, offset: 0 }
           : page;
         if (commitResult) {
+          pendingOffsetRef.current = null;
           offsetRef.current = committedPage.offset;
           setOffset(committedPage.offset);
           setMeasurementPage(committedPage);
@@ -198,6 +205,7 @@ export default function App() {
           if (!commitResult) {
             throw error;
           }
+          pendingOffsetRef.current = null;
           setHistoryFreshness("stale");
           setApiError(error instanceof Error ? error.message : "Could not load measurements");
         }
@@ -216,9 +224,9 @@ export default function App() {
     return requestPage(requestedOffset, false);
   }, []);
 
-  const refreshSelectedMeasurements = useCallback(() => {
+  const refreshSelectedMeasurements = useCallback((onCurrentSuccess?: () => void) => {
     const selectedDeviceId = selectedDeviceIdRef.current;
-    const selectedOffset = offsetRef.current;
+    const selectedOffset = pendingOffsetRef.current ?? offsetRef.current;
     const selectedOrder = orderRef.current;
     const generation = selectionGeneration.current;
     const notificationGeneration = measurementNotificationGeneration.current;
@@ -274,6 +282,7 @@ export default function App() {
       if (!page) {
         return;
       }
+      pendingOffsetRef.current = null;
       offsetRef.current = page.offset;
       setOffset(page.offset);
       setMeasurementPage(page);
@@ -289,6 +298,7 @@ export default function App() {
       }));
       setHistoryFreshness(measurementConnectionRef.current === "live" ? "current" : "stale");
       setApiError(null);
+      onCurrentSuccess?.();
     });
   }, [accessToken, loadMeasurementPage]);
 
@@ -315,6 +325,7 @@ export default function App() {
         pageRequestGeneration.current += 1;
         selectedDeviceIdRef.current = "";
         offsetRef.current = 0;
+        pendingOffsetRef.current = null;
         setDeviceId("");
         setMeasurementState(EMPTY_STATE);
         setOffset(0);
@@ -358,6 +369,7 @@ export default function App() {
         setAccessToken(restoredToken);
         selectedDeviceIdRef.current = "";
         offsetRef.current = 0;
+        pendingOffsetRef.current = null;
         setDeviceId("");
         setMeasurementState(EMPTY_STATE);
         setOffset(0);
@@ -430,6 +442,7 @@ export default function App() {
       setCanAddDevices(currentUser.can_add_devices);
       selectedDeviceIdRef.current = "";
       offsetRef.current = 0;
+      pendingOffsetRef.current = null;
       pageRequestGeneration.current += 1;
       setDeviceId("");
       setMeasurementState(EMPTY_STATE);
@@ -474,6 +487,7 @@ export default function App() {
     pageRequestGeneration.current += 1;
     selectedDeviceIdRef.current = selectedDeviceId;
     offsetRef.current = 0;
+    pendingOffsetRef.current = null;
     setDeviceId(selectedDeviceId);
     setOffset(0);
     updateMeasurementConnection("connecting");
@@ -509,8 +523,12 @@ export default function App() {
             void refreshDevices(token, authGeneration);
           }
         },
-        () => {
+        (status: NatsLifecycleStatus) => {
           if (!disposed) {
+            if (status !== "reconnect") {
+              setDeviceUpdatesConnection("connecting");
+              return;
+            }
             setDeviceUpdatesConnection("live");
             setDeviceUpdatesError(null);
             void refreshDevices(token, authGeneration);
@@ -585,13 +603,34 @@ export default function App() {
               }
             }
           },
-          () => {
+          (status: NatsLifecycleStatus) => {
             if (!isCurrent()) {
+              return;
+            }
+            if (status !== "reconnect") {
+              updateMeasurementConnection("connecting");
+              setHistoryFreshness("stale");
               return;
             }
             updateMeasurementConnection("live");
             setMeasurementConnectionError(null);
-            refreshSelectedMeasurements();
+            refreshSelectedMeasurements(() => {
+              if (!isCurrent() || initialStateLoaded) {
+                return;
+              }
+              const queuedNotifications = pendingNotifications.splice(0);
+              initialStateLoaded = true;
+              setIsInitialMeasurementLoading(false);
+              if (queuedNotifications.length > 0) {
+                measurementNotificationGeneration.current += queuedNotifications.length;
+                setMeasurementState((current) => queuedNotifications.reduce<MeasurementState>(
+                  (state, notification) => mergeNotification(state, notification),
+                  current,
+                ));
+                setHistoryFreshness("scheduled");
+                scheduleMeasurementRefresh();
+              }
+            });
           },
           (error) => {
             if (isCurrent()) {
@@ -742,6 +781,7 @@ export default function App() {
     ) {
       return;
     }
+    pendingOffsetRef.current = targetOffset;
     void loadMeasurementPage(
       deviceId,
       accessToken,
@@ -757,6 +797,7 @@ export default function App() {
     }
     orderRef.current = nextOrder;
     offsetRef.current = 0;
+    pendingOffsetRef.current = null;
     pageRequestGeneration.current += 1;
     setOrder(nextOrder);
     setOffset(0);
@@ -974,7 +1015,7 @@ export default function App() {
                         type="button"
                       >
                         <span className="block truncate text-sm font-semibold">{device.name}</span>
-                        <span className={`mt-1 block break-all font-mono text-[0.68rem] leading-4 ${isSelected ? "text-cyan-200/70" : "text-slate-600"}`}>
+                        <span className={`mt-1 block break-all font-mono text-[0.68rem] leading-4 ${isSelected ? "text-cyan-200" : "text-slate-300"}`}>
                           {device.id}
                         </span>
                       </button>
@@ -1016,11 +1057,11 @@ export default function App() {
                 <div className="min-w-0">
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Device workspace</p>
                   <h1 className="mt-2 truncate text-3xl font-semibold tracking-tight text-white">{selectedDevice.name}</h1>
-                  <p className="mt-2 break-all font-mono text-xs text-slate-500">{selectedDevice.id}</p>
+                  <p className="mt-2 break-all font-mono text-xs text-slate-300">{selectedDevice.id}</p>
                 </div>
 
                 <div className="grid min-w-0 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                  <Panel aria-live="polite" className="overflow-hidden border-cyan-400/20 p-5 sm:col-span-2 xl:col-span-1">
+                  <Panel aria-live="polite" borderTone="cyan" className="overflow-hidden p-5 sm:col-span-2 xl:col-span-1">
                     <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Latest reading</p>
                     <h2 className="mt-3 text-sm font-medium text-slate-300">
                       Latest measurement{latest ? `: ${latest.measurement_name} ${latest.value}` : ""}
