@@ -30,6 +30,9 @@ from .signatures import verify_device_signature
 class DeviceListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
+    def get_authenticate_header(self, request):
+        return "Bearer"
+
     def get(self, request):
         return Response(
             DeviceSerializer(Device.objects.order_by("name"), many=True).data

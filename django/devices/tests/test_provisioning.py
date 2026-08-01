@@ -1,10 +1,13 @@
 import base64
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.test import override_settings
+from django.utils import timezone
 from rest_framework.test import APITestCase
+from rest_framework_simplejwt.tokens import AccessToken
 
 from devices.crypto import decrypt_device_key
 from devices.models import Device
@@ -37,6 +40,34 @@ class DeviceProvisioningTests(APITestCase):
 
         listing = self.client.get("/api/devices/")
         self.assertNotIn("key", listing.data[0])
+
+    def test_unauthenticated_device_creation_requires_authentication(self):
+        response = self.client.post("/api/devices/", {"name": "blocked"})
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_malformed_bearer_device_creation_requires_authentication(self):
+        response = self.client.post(
+            "/api/devices/",
+            {"name": "blocked"},
+            HTTP_AUTHORIZATION="Bearer invalid",
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_expired_bearer_device_creation_requires_authentication(self):
+        expired_token = AccessToken.for_user(self.staff)
+        expired_token.set_exp(
+            from_time=timezone.now(), lifetime=timedelta(seconds=-1)
+        )
+
+        response = self.client.post(
+            "/api/devices/",
+            {"name": "blocked"},
+            HTTP_AUTHORIZATION=f"Bearer {expired_token}",
+        )
+
+        self.assertEqual(response.status_code, 401)
 
     @patch("devices.views.publish_device_created_best_effort")
     def test_staff_provisioning_schedules_device_created_event(self, publish):
